@@ -1,18 +1,31 @@
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   background: linear-gradient(180deg, #7ed6ff 0%, #a8e6ff 45%, #fff3b0 100%);
-  min-height: 100vh; color: #222;
+  color: #222;
+  /* Tanpa scroll vertikal: halaman = 1 layar penuh, yang scroll hanya
+     isi panel (lobby / daftar pemain) kalau memang kepanjangan. */
+  height: 100vh; height: 100dvh;
+  overflow: hidden; overscroll-behavior: none;
 }
-#app { max-width: 960px; margin: 0 auto; padding: 12px 12px 32px; }
-.topbar { text-align: center; }
-.topbar h1 { margin: 4px 0 0; font-size: 2.6rem; letter-spacing: 1px; text-shadow: 2px 2px 0 #fff; }
-.tagline { margin: 2px 0 12px; color: #444; }
+/* Shell aplikasi: kolom flex setinggi layar, anak-anak mengecil mengikuti sisa ruang. */
+#app {
+  max-width: 960px; height: 100vh; height: 100dvh;
+  margin: 0 auto; padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 8px; min-height: 0;
+}
+.topbar { text-align: center; flex-shrink: 0; }
+.topbar h1 { margin: 0; font-size: 2rem; letter-spacing: 1px; text-shadow: 2px 2px 0 #fff; line-height: 1.1; }
+.tagline { margin: 2px 0 0; color: #444; font-size: .9rem; }
+/* Saat sudah masuk room / main, header + footer disembunyikan supaya
+   ruang layar penuh dipakai game. Class .in-game dipasang game.js. */
+body.in-game .topbar, body.in-game footer { display: none; }
 .panel {
   background: #fff; border: 3px solid #222; border-radius: 16px;
-  box-shadow: 6px 6px 0 #222; padding: 16px; margin: 12px 0;
+  box-shadow: 6px 6px 0 #222; padding: 14px; margin: 0;
 }
-.panel h2 { margin-top: 0; }
+.panel h2 { margin-top: 0; margin-bottom: 8px; }
 .field { display: block; margin-bottom: 10px; font-weight: 600; }
 .field input, #roomCodeInput {
   display: block; width: 100%; margin-top: 4px; padding: 10px;
@@ -32,14 +45,30 @@ body {
 .code { font-size: 1.4rem; letter-spacing: 4px; background: #ffcf3f; padding: 2px 10px; border-radius: 8px; border: 2px solid #222; }
 .hint { color: #555; font-size: .9rem; }
 .center { text-align: center; }
-.player-list { list-style: none; padding: 0; }
-.player-list li { padding: 6px 8px; border-bottom: 1px dashed #ccc; font-weight: 600; }
+.player-list { list-style: none; padding: 0; margin: 6px 0; }
+.player-list li { padding: 4px 8px; border-bottom: 1px dashed #ccc; font-weight: 600; }
 .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #222; margin-right: 8px; vertical-align: -2px; }
-.howto { margin-top: 12px; }
-#hud { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 8px 0; }
-#hud span { background: #fff; border: 2px solid #222; border-radius: 999px; padding: 4px 12px; font-weight: 700; box-shadow: 2px 2px 0 #222; }
-#game-container { border: 3px solid #222; border-radius: 16px; overflow: hidden; box-shadow: 6px 6px 0 #222; background: #87ceeb; }
-#game-container canvas { display: block; width: 100% !important; height: auto !important; }
+.howto { margin-top: 10px; }
+/* Lobby boleh scroll di dalam panelnya sendiri kalau layar pendek, halaman tetap diam. */
+#lobby { flex: 1; min-height: 0; overflow-y: auto; }
+/* Game section: flex penuh, tidak boleh meluber. */
+#gameSection { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+#gameSection[hidden] { display: none; }
+#hud { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; flex-shrink: 0; }
+#hud span { background: #fff; border: 2px solid #222; border-radius: 999px; padding: 3px 10px; font-weight: 700; font-size: .9rem; box-shadow: 2px 2px 0 #222; }
+/* Panel room saat lobby: ringkas, daftar pemain scroll di dalam kalau rame. */
+#roomInfo { flex-shrink: 0; padding: 10px 14px; max-height: 42%; overflow-y: auto; }
+#roomInfo p { margin: 4px 0; }
+#game-container {
+  flex: 1; min-height: 0;
+  border: 3px solid #222; border-radius: 16px; overflow: hidden;
+  box-shadow: 6px 6px 0 #222; background: #87ceeb;
+  display: flex; align-items: center; justify-content: center;
+}
+/* JANGAN paksa canvas width:100% + height:auto — itu yang bikin canvas
+   setinggi lebar layar dan mendorong halaman jadi scroll. Biarkan Phaser
+   (Scale FIT) menghitung ukuran canvas agar muat lebar DAN tinggi parent. */
+#game-container canvas { display: block; max-width: 100%; max-height: 100%; }
 .countdown {
   position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%);
   font-size: 6rem; font-weight: 900; color: #ff4757; text-shadow: 4px 4px 0 #fff, 6px 6px 0 #222;
@@ -50,12 +79,25 @@ body {
   background: #2ed573; color: #fff; font-weight: 800; padding: 8px 18px;
   border: 2px solid #222; border-radius: 999px; box-shadow: 3px 3px 0 #222; z-index: 20;
 }
-#touchControls { display: none; justify-content: space-between; margin-top: 10px; }
+#touchControls { display: none; justify-content: space-between; flex-shrink: 0; }
 .touch-btn {
-  width: 72px; height: 72px; font-size: 1.8rem; border-radius: 50%;
+  width: 60px; height: 60px; font-size: 1.6rem; border-radius: 50%;
   border: 3px solid #222; background: #fff; box-shadow: 3px 3px 0 #222; touch-action: none;
 }
 .touch-btn.jump { background: #ffcf3f; }
 @media (pointer: coarse) { #touchControls { display: flex; } }
+#results { flex-shrink: 0; max-height: 45%; overflow-y: auto; }
 #resultsList li { font-size: 1.1rem; padding: 4px 0; }
-footer { text-align: center; color: #555; font-size: .85rem; margin-top: 12px; }
+footer { text-align: center; color: #555; font-size: .85rem; flex-shrink: 0; }
+/* Layar pendek (HP landscape / laptop kecil): sembunyikan teks yang tidak penting. */
+@media (max-height: 700px) {
+  .tagline, #gameSection .hint.center { display: none; }
+  .topbar h1 { font-size: 1.6rem; }
+  .countdown { font-size: 4rem; }
+}
+@media (max-width: 480px) {
+  #app { padding: 6px 8px; }
+  .topbar h1 { font-size: 1.7rem; }
+  .tagline { display: none; }
+  .panel { padding: 12px; }
+}

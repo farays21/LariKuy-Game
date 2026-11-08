@@ -57,6 +57,7 @@
   socket.on('joinError', (d) => showError(d.message));
 
   socket.on('joinedRoom', (d) => {
+    document.body.classList.add('in-game'); // sembunyikan header/footer: layar penuh buat game, tanpa scroll
     myId = d.playerId; roomCode = d.code; isHost = d.isHost;
     serverTimeOffset = d.serverTime - Date.now();
     $('roomCode').textContent = roomCode;
@@ -124,6 +125,7 @@
   });
 
   socket.on('backToLobby', () => {
+    document.body.classList.remove('in-game');
     roomStatus = 'lobby';
     resultsEl.hidden = true;
     gameSectionEl.hidden = true;
@@ -160,7 +162,7 @@
   $('btnStart').addEventListener('click', () => socket.emit('startGame'));
   $('btnAgain').addEventListener('click', () => {
     if (isHost) socket.emit('backToLobby');
-    else { resultsEl.hidden = true; gameSectionEl.hidden = true; lobbyEl.hidden = false; roomInfoEl.hidden = true; }
+    else { document.body.classList.remove('in-game'); resultsEl.hidden = true; gameSectionEl.hidden = true; lobbyEl.hidden = false; roomInfoEl.hidden = true; }
   });
 
   // ---------- Input (keyboard + sentuh) ----------
