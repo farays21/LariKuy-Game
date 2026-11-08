@@ -47,6 +47,17 @@
       <span id="hudPlace">—</span>
       <span id="hudPlayers">👥 1/8</span>
       <span id="hudRoom">Room —</span>
+      <button id="btnMute" class="btn small" type="button" title="Nyalakan/matikan suara">🔊</button>
+    </div>
+    <!-- Progress bar balapan (v0.1.4): lintasan start→finish, penanda
+         checkpoint & finish, satu dot per pemain (warna = warna karakter). -->
+    <div id="progressBar" aria-label="Progress balapan">
+      <div class="progress-track">
+        <span class="progress-marker" style="left:0%">▶</span>
+        <span class="progress-marker" style="left:50.9%" title="Checkpoint">✅</span>
+        <span class="progress-marker" style="left:100%">🏁</span>
+        <div id="progressDots"></div>
+      </div>
     </div>
     <!-- Panel room dipindah ke sini (dulu di dalam #lobby): lobby disembunyikan
          begitu pemain join, jadi tombol Mulai di dalam lobby tidak pernah bisa

@@ -7,6 +7,8 @@ Balapan platformer 2D multiplayer ala Fall Guys — lari, lompat, hindari rintan
 * **Countdown 3-2-1-GO**, timer balapan, dan urutan finish ditentukan server
 * Rintangan bergerak **deterministik pakai jam server**, jadi semua pemain melihat gerakan yang sama
 * Bisa dimainkan di HP (tombol sentuh) maupun keyboard
+* **Progress bar balapan** di atas layar: dot warna tiap pemain, penanda checkpoint & finish (v0.1.4)
+* **Sound effect** synth Web Audio (tanpa file audio): lompat, jatuh, kena palu, checkpoint, countdown/GO, finish, klik — tombol mute 🔊/🔇 di HUD, preferensi tersimpan di localStorage (v0.1.4)
 
 ## Teknologi
 

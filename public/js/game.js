@@ -36,6 +36,128 @@
   function serverNow() { return Date.now() + serverTimeOffset; }
   function fmtTime(ms) { return (ms / 1000).toFixed(1) + ' dtk'; }
 
+  // ---------- SFX: synth Web Audio murni, tanpa file audio eksternal (v0.1.4) ----------
+  // AudioContext hanya dibuat/di-resume setelah interaksi user pertama,
+  // supaya tidak diblokir kebijakan autoplay browser.
+  const SFX = (() => {
+    let ctx = null;
+    let muted = false;
+    try { muted = localStorage.getItem('larikuy-muted') === '1'; } catch (e) { /* abaikan */ }
+    function ensure() {
+      if (!ctx) {
+        try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+      }
+      if (ctx && ctx.state === 'suspended') ctx.resume();
+      return ctx;
+    }
+    function tone(opts) {
+      if (muted) return;
+      const c = ensure();
+      if (!c) return;
+      const freq = opts.freq || 440, freqEnd = opts.freqEnd || null;
+      const dur = opts.dur || 0.12, type = opts.type || 'sine';
+      const vol = opts.vol != null ? opts.vol : 0.2, delay = opts.delay || 0;
+      const t0 = c.currentTime + delay;
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t0);
+      if (freqEnd) o.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), t0 + dur);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(c.destination);
+      o.start(t0); o.stop(t0 + dur + 0.05);
+    }
+    return {
+      isMuted() { return muted; },
+      toggle() {
+        muted = !muted;
+        try { localStorage.setItem('larikuy-muted', muted ? '1' : '0'); } catch (e) { /* abaikan */ }
+        return muted;
+      },
+      unlock() { ensure(); },
+      click() { tone({ freq: 600, dur: 0.06, type: 'square', vol: 0.12 }); },
+      jump() { tone({ freq: 300, freqEnd: 700, dur: 0.15, vol: 0.2 }); },
+      fall() { tone({ freq: 500, freqEnd: 120, dur: 0.35, type: 'sawtooth', vol: 0.18 }); },
+      hammer() {
+        tone({ freq: 160, freqEnd: 60, dur: 0.2, type: 'square', vol: 0.22 });
+        tone({ freq: 90, dur: 0.15, type: 'triangle', vol: 0.2, delay: 0.02 });
+      },
+      checkpoint() { tone({ freq: 880, dur: 0.12 }); tone({ freq: 1318, dur: 0.18, delay: 0.1 }); },
+      count() { tone({ freq: 440, dur: 0.12, type: 'square', vol: 0.18 }); },
+      go() { tone({ freq: 880, dur: 0.3, type: 'square', vol: 0.2 }); tone({ freq: 1320, dur: 0.3, delay: 0.02 }); },
+      fanfare() { [523, 659, 784, 1047].forEach((f, i) => tone({ freq: f, dur: 0.18, delay: i * 0.12 })); },
+      otherFinish() { tone({ freq: 988, dur: 0.15 }); tone({ freq: 1175, dur: 0.2, delay: 0.1 }); },
+      boing() { tone({ freq: 200, freqEnd: 600, dur: 0.2, vol: 0.18 }); },
+    };
+  })();
+  // Buka kunci audio saat interaksi pertama (klik / sentuh / tombol keyboard).
+  ['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
+    window.addEventListener(ev, () => SFX.unlock(), { once: true, passive: true }));
+
+  // ---------- Progress bar balapan (v0.1.4) ----------
+  // DOM-only, ringan: hanya ubah style.left dot, jangan rebuild innerHTML.
+  const progressDotsEl = $('progressDots');
+  const progressMap = new Map(); // id -> {name, colorHex, x, finished, place}
+  const progressEls = {}; // id -> dot element
+  let lastProgressAt = 0;
+  function progressPct(x) {
+    return Math.max(0, Math.min(100, (((Number(x) || START_X) - START_X) / (FINISH_X - START_X)) * 100));
+  }
+  function updateProgressDot(id, data) {
+    if (!progressDotsEl) return;
+    const prev = progressMap.get(id) || {};
+    const merged = {
+      name: data.name != null ? data.name : prev.name,
+      colorHex: data.colorHex != null ? data.colorHex : prev.colorHex,
+      x: data.x != null ? data.x : prev.x,
+      finished: data.finished != null ? data.finished : prev.finished,
+      place: data.place != null ? data.place : prev.place,
+    };
+    progressMap.set(id, merged);
+    let el = progressEls[id];
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'progress-dot';
+      const lab = document.createElement('span');
+      lab.className = 'pname';
+      el.appendChild(lab);
+      progressDotsEl.appendChild(el);
+      progressEls[id] = el;
+    }
+    el.style.left = progressPct(merged.x) + '%';
+    el.style.background = merged.colorHex || '#999';
+    el.classList.toggle('me', id === myId);
+    el.classList.toggle('finished', !!merged.finished);
+    el.firstChild.textContent = (merged.name || '').slice(0, 8) +
+      (merged.finished && merged.place ? ' #' + merged.place : '') +
+      (id === myId ? ' 👈' : '');
+  }
+  function pruneProgressDots(aliveIds) {
+    Object.keys(progressEls).forEach((id) => {
+      if (!aliveIds.has(id)) {
+        progressEls[id].remove();
+        delete progressEls[id];
+        progressMap.delete(id);
+      }
+    });
+  }
+  function resetProgress() {
+    progressMap.clear();
+    Object.values(progressEls).forEach((el) => el.remove());
+    Object.keys(progressEls).forEach((id) => delete progressEls[id]);
+    lastProgressAt = 0;
+  }
+  function updateLocalProgress(now) {
+    if (!scene || !scene.player || !myId) return;
+    if (now - lastProgressAt < 100) return; // maks ~10 Hz, cukup untuk bar
+    lastProgressAt = now;
+    updateProgressDot(myId, {
+      name: myName, colorHex: '#' + COLORS[myColor].toString(16).padStart(6, '0'),
+      x: scene.player.x, finished,
+    });
+  }
+
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
   const lobbyEl = $('lobby'), gameSectionEl = $('gameSection');
@@ -59,6 +181,10 @@
   socket.on('joinedRoom', (d) => {
     document.body.classList.add('in-game'); // sembunyikan header/footer: layar penuh buat game, tanpa scroll
     myId = d.playerId; roomCode = d.code; isHost = d.isHost;
+    // Warna pemain dari server, supaya sprite + dot progress bar sama warnanya
+    // (sebelumnya myColor tidak pernah diisi, jadi pemain lokal selalu merah).
+    myColor = COLORS.findIndex((c) => '#' + c.toString(16).padStart(6, '0') === (d.colorHex || '').toLowerCase());
+    if (myColor < 0) myColor = 0;
     serverTimeOffset = d.serverTime - Date.now();
     $('roomCode').textContent = roomCode;
     $('hudRoom').textContent = 'Room ' + roomCode;
@@ -67,6 +193,8 @@
     lobbyEl.hidden = true;
     gameSectionEl.hidden = false;
     resultsEl.hidden = true;
+    resetProgress();
+    updateProgressDot(d.playerId, { name: myName, colorHex: d.colorHex, x: START_X, finished: false });
     if (!window.__lariKuyGame) initPhaser();
     if (scene) scene.showLobbyBackdrop();
   });
@@ -79,20 +207,27 @@
     roomInfoEl.hidden = d.status !== 'lobby';
     $('btnStart').hidden = !(isHost && d.status === 'lobby');
     $('waitHost').hidden = isHost || d.status !== 'lobby';
+    // Progress bar: posisi tiap pemain dari roomUpdate (otoritatif).
+    d.players.forEach((p) => updateProgressDot(p.id, p));
+    pruneProgressDots(new Set(d.players.map((p) => p.id)));
     // Hapus pemain remote yang sudah keluar.
     if (scene) scene.syncRemotePlayers(d.players);
   });
 
   socket.on('countdown', (d) => {
+    SFX.count();
     countdownEl.hidden = false;
     countdownEl.textContent = d.count;
   });
 
   socket.on('raceStarted', (d) => {
+    SFX.go();
     raceStartServerTime = d.serverTime;
     serverTimeOffset = d.serverTime - Date.now();
     finished = false; finishSent = false;
     checkpoint = { x: START_X, y: 500 };
+    resetProgress();
+    updateProgressDot(myId, { name: myName, colorHex: '#' + COLORS[myColor].toString(16).padStart(6, '0'), x: START_X, finished: false });
     countdownEl.textContent = 'GO! 🏁';
     setTimeout(() => { countdownEl.hidden = true; }, 600);
     if (scene) scene.startRace();
@@ -102,6 +237,7 @@
   socket.on('playersMoved', (d) => {
     if (d.id === myId) return;
     remoteTargets[d.id] = { x: d.x, y: d.y, name: d.name, color: d.color, colorHex: d.colorHex };
+    updateProgressDot(d.id, d);
     if (scene) scene.updateRemote(d.id, d);
   });
 
@@ -111,11 +247,14 @@
   });
 
   socket.on('playerFinished', (d) => {
+    if (d.id === myId) SFX.fanfare(); else SFX.otherFinish();
+    updateProgressDot(d.id, { x: FINISH_X, finished: true, place: d.place });
     showToast('🏁 ' + d.name + ' finish ke-' + d.place + ' (' + fmtTime(d.timeMs) + ')');
   });
 
   socket.on('raceFinished', (d) => {
     roomStatus = 'finished';
+    (d.results || []).forEach((r) => updateProgressDot(r.id, { x: FINISH_X, finished: true, place: r.place }));
     resultsEl.hidden = false;
     resultsListEl.innerHTML = d.results.map((r) =>
       '<li><b>#' + r.place + ' ' + escapeHtml(r.name) + '</b> — ' + fmtTime(r.timeMs) +
@@ -126,6 +265,7 @@
 
   socket.on('backToLobby', () => {
     document.body.classList.remove('in-game');
+    resetProgress();
     roomStatus = 'lobby';
     resultsEl.hidden = true;
     gameSectionEl.hidden = true;
@@ -144,25 +284,42 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // ---------- Tombol mute (v0.1.4): preferensi tersimpan di localStorage ----------
+  const btnMuteEl = $('btnMute');
+  if (btnMuteEl) {
+    btnMuteEl.textContent = SFX.isMuted() ? '🔇' : '🔊';
+    btnMuteEl.addEventListener('click', () => {
+      SFX.unlock();
+      const muted = SFX.toggle();
+      btnMuteEl.textContent = muted ? '🔇' : '🔊';
+      if (!muted) SFX.click();
+      showToast(muted ? '🔇 Suara dimatikan' : '🔊 Suara dinyalakan');
+    });
+  }
+
   // ---------- Tombol lobby ----------
   $('btnCreate').addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
     myName = $('playerName').value.trim() || 'Pemain';
     socket.emit('createRoom', { name: myName });
   });
   $('btnJoin').addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
     myName = $('playerName').value.trim() || 'Pemain';
     const code = $('roomCodeInput').value.trim().toUpperCase();
     if (!code) return showError('Masukkan kode room 4 huruf dulu!');
     socket.emit('joinRoom', { code, name: myName });
   });
   $('btnCopyCode').addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
     if (navigator.clipboard) navigator.clipboard.writeText(roomCode);
     showToast('Kode room disalin: ' + roomCode);
   });
-  $('btnStart').addEventListener('click', () => socket.emit('startGame'));
+  $('btnStart').addEventListener('click', () => { SFX.unlock(); SFX.click(); socket.emit('startGame'); });
   $('btnAgain').addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
     if (isHost) socket.emit('backToLobby');
-    else { document.body.classList.remove('in-game'); resultsEl.hidden = true; gameSectionEl.hidden = true; lobbyEl.hidden = false; roomInfoEl.hidden = true; }
+    else { document.body.classList.remove('in-game'); resetProgress(); resultsEl.hidden = true; gameSectionEl.hidden = true; lobbyEl.hidden = false; roomInfoEl.hidden = true; }
   });
 
   // ---------- Input (keyboard + sentuh) ----------
@@ -215,6 +372,7 @@
       this.racing = false;
       this.lastSend = 0;
       this.hammerHitAt = 0;
+      this.lastJumpSfxAt = 0;
       this.checkpointReached = false;
       this.remoteSprites = {}; // id -> {sprite, label}
 
@@ -334,6 +492,7 @@
       this.physics.add.overlap(this.player, this.bumpers, (pl, b) => {
         pl.setVelocityY(-620);
         pl.setVelocityX(pl.x < b.x ? -260 : 260);
+        SFX.boing();
         showToast('Boing! 🟡');
       });
 
@@ -427,6 +586,7 @@
             this.hammerHitAt = time;
             const dir = p.x < h.x ? -1 : 1;
             p.setVelocity(dir * 420, -480);
+            SFX.hammer();
             showToast('💥 Kena palu! Terpental!');
           }
         }
@@ -438,7 +598,12 @@
         if (keys.left) p.setVelocityX(-280);
         else if (keys.right) p.setVelocityX(280);
         else p.setVelocityX(0);
-        if (keys.jump && onGround) p.setVelocityY(-560);
+        if (keys.jump && onGround) {
+          p.setVelocityY(-560);
+          // Suara lompat hanya saat benar-benar lompat dari tanah + cooldown
+          // kecil, supaya tidak spam kalau tombol ditahan.
+          if (time - this.lastJumpSfxAt > 200) { this.lastJumpSfxAt = time; SFX.jump(); }
+        }
       } else {
         p.setVelocityX(0);
       }
@@ -450,6 +615,7 @@
       if (this.racing && !this.checkpointReached && p.x >= CHECKPOINT_X) {
         this.checkpointReached = true;
         checkpoint = { x: CHECKPOINT_X, y: 500 };
+        SFX.checkpoint();
         showToast('✅ Checkpoint!');
       }
 
@@ -460,6 +626,7 @@
       // jatuh sampai y > 780 di luar layar.
       if (p.y > WORLD_HEIGHT - 20) {
         p.setPosition(checkpoint.x, checkpoint.y).setVelocity(0, 0);
+        SFX.fall();
         showToast('😵 Jatuh! Kembali ke checkpoint');
       }
 
@@ -476,6 +643,9 @@
         const el = serverNow() - raceStartServerTime;
         $('hudTimer').textContent = '⏱ ' + (this.racing || finished ? fmtTime(Math.max(0, el)) : '0.0 dtk');
       }
+
+      // --- Progress bar: dot pemain sendiri, maks ~10 Hz ---
+      updateLocalProgress(time);
 
       // --- Kirim posisi ~20 Hz saat balapan ---
       if (this.racing && !finished && time - this.lastSend > MOVE_SEND_MS) {
