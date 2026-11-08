@@ -338,7 +338,11 @@
       });
 
       this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-      this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      // BUG FIX v0.1.3: batas bawah world HARUS terbuka (checkCollisionDown=false).
+      // Sebelumnya world bounds bawah menahan pemain di y max ~696, padahal
+      // respawn dipicu di y > 780 — jadi pemain jatuh ke jurang malah mendarat
+      // di lantai tak terlihat di dasar jurang dan tidak pernah respawn.
+      this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT, true, true, true, false);
       this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
       this.cameras.main.setZoom(1);
 
@@ -450,7 +454,11 @@
       }
 
       // --- Jatuh ke jurang = respawn di checkpoint ---
-      if (p.y > WORLD_HEIGHT + 60) {
+      // Ambang WORLD_HEIGHT - 20 (y > 700): tanah di y=640, pemain berdiri
+      // di y~616, jadi begitu y melewati 700 dia sudah pasti jatuh ke jurang
+      // (bukan sekadar lompat). Respawn langsung, tidak perlu menunggu
+      // jatuh sampai y > 780 di luar layar.
+      if (p.y > WORLD_HEIGHT - 20) {
         p.setPosition(checkpoint.x, checkpoint.y).setVelocity(0, 0);
         showToast('😵 Jatuh! Kembali ke checkpoint');
       }
