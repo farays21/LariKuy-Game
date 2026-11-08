@@ -17,6 +17,11 @@
 
   const COLORS = [0xff4757, 0x2e86ff, 0x2ed573, 0xffa502, 0xa55eea, 0xff6b81, 0x1dd1a1, 0x70a1ff];
 
+  // Helper DOM — HARUS didefinisikan paling atas: v0.1.4 sempat memanggil $()
+  // di bagian progress bar SEBELUM $ didefinisikan, sehingga script mati
+  // dengan ReferenceError dan socket tidak pernah connect (footer tetap merah).
+  const $ = (id) => document.getElementById(id);
+
   // ---------- State client ----------
   const socket = io();
   let myId = null;
@@ -159,7 +164,6 @@
   }
 
   // ---------- DOM ----------
-  const $ = (id) => document.getElementById(id);
   const lobbyEl = $('lobby'), gameSectionEl = $('gameSection');
   const lobbyErrorEl = $('lobbyError'), roomInfoEl = $('roomInfo');
   const playerListEl = $('playerList'), resultsEl = $('results'), resultsListEl = $('resultsList');
