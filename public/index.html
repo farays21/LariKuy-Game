@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LariKuy! — Balapan Platformer Mabar</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <h1>🏃 LariKuy!</h1>
+    <p class="tagline">Balapan platformer 2D — lari, lompat, hindari rintangan, siapa duluan sampai finish!</p>
+  </header>
+
+  <!-- ============ LOBBY ============ -->
+  <section id="lobby" class="panel">
+    <h2>🎮 Lobby</h2>
+    <label class="field">
+      <span>Nama kamu</span>
+      <input id="playerName" type="text" maxlength="16" placeholder="cth: Budi" autocomplete="off">
+    </label>
+    <div class="row">
+      <button id="btnCreate" class="btn primary">➕ Buat Room</button>
+      <input id="roomCodeInput" type="text" maxlength="4" placeholder="Kode room" autocomplete="off">
+      <button id="btnJoin" class="btn">🚪 Gabung</button>
+    </div>
+    <p id="lobbyError" class="error" hidden></p>
+    <div id="roomInfo" hidden>
+      <p>Kode room: <strong id="roomCode" class="code"></strong>
+        <button id="btnCopyCode" class="btn small">📋 Salin</button></p>
+      <p class="hint">Bagikan kode ini ke temanmu (maks 8 pemain)!</p>
+      <ul id="playerList" class="player-list"></ul>
+      <button id="btnStart" class="btn primary big" hidden>▶️ Mulai Balapan</button>
+      <p id="waitHost" class="hint">Menunggu host memulai balapan…</p>
+    </div>
+    <details class="howto">
+      <summary>❓ Cara main</summary>
+      <ul>
+        <li><b>Gerak:</b> A / D atau ← / → (di HP: tombol ◀ ▶ di bawah layar)</li>
+        <li><b>Lompat:</b> Spasi / W / ↑ (di HP: tombol ⤒)</li>
+        <li>Jatuh ke jurang = kembali ke checkpoint terakhir.</li>
+        <li>Kena palu putar = terpental! Lewati platform bergerak dengan sabar.</li>
+        <li>Siapa duluan melewati garis finish, dia juaranya 🏆</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- ============ GAME ============ -->
+  <section id="gameSection" hidden>
+    <div id="hud">
+      <span id="hudTimer">⏱ 0.0 dtk</span>
+      <span id="hudPlace">—</span>
+      <span id="hudPlayers">👥 1/8</span>
+      <span id="hudRoom">Room —</span>
+    </div>
+    <div id="game-container"></div>
+    <div id="countdown" class="countdown" hidden></div>
+    <div id="toast" class="toast" hidden></div>
+
+    <div id="touchControls">
+      <button id="touchLeft" class="touch-btn">◀</button>
+      <button id="touchRight" class="touch-btn">▶</button>
+      <button id="touchJump" class="touch-btn jump">⤒</button>
+    </div>
+    <p class="hint center">A/D gerak · Spasi lompat · Jatuh = respawn di checkpoint</p>
+
+    <!-- Hasil akhir -->
+    <div id="results" class="panel" hidden>
+      <h2>🏆 Hasil Balapan</h2>
+      <ol id="resultsList"></ol>
+      <button id="btnAgain" class="btn primary">🔄 Main Lagi (kembali ke lobby)</button>
+    </div>
+  </section>
+
+  <footer>dibuat dengan Phaser 3 + Socket.io · tanpa database · <span id="connStatus">🔴 belum terhubung</span></footer>
+</div>
+<script src="js/game.js"></script>
+</body>
+</html>

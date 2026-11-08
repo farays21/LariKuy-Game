@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "description": "LariKuy! — balapan platformer 2D multiplayer ala Fall Guys. Lari, lompat, hindari rintangan, siapa duluan sampai finish!",
+  "keywords": [
+    "game",
+    "multiplayer",
+    "platformer",
+    "phaser",
+    "socket.io"
+  ],
+  "license": "MIT",
+  "main": "server.js",
+  "name": "larikuy-game",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "version": "0.1.0"
+}
