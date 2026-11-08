@@ -75,6 +75,7 @@
     if (d.serverTime) serverTimeOffset = d.serverTime - Date.now();
     renderPlayerList(d.players);
     $('hudPlayers').textContent = '👥 ' + d.players.length + '/8';
+    roomInfoEl.hidden = d.status !== 'lobby';
     $('btnStart').hidden = !(isHost && d.status === 'lobby');
     $('waitHost').hidden = isHost || d.status !== 'lobby';
     // Hapus pemain remote yang sudah keluar.

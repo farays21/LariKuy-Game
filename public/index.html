@@ -28,14 +28,6 @@
       <button id="btnJoin" class="btn">🚪 Gabung</button>
     </div>
     <p id="lobbyError" class="error" hidden></p>
-    <div id="roomInfo" hidden>
-      <p>Kode room: <strong id="roomCode" class="code"></strong>
-        <button id="btnCopyCode" class="btn small">📋 Salin</button></p>
-      <p class="hint">Bagikan kode ini ke temanmu (maks 8 pemain)!</p>
-      <ul id="playerList" class="player-list"></ul>
-      <button id="btnStart" class="btn primary big" hidden>▶️ Mulai Balapan</button>
-      <p id="waitHost" class="hint">Menunggu host memulai balapan…</p>
-    </div>
     <details class="howto">
       <summary>❓ Cara main</summary>
       <ul>
@@ -55,6 +47,17 @@
       <span id="hudPlace">—</span>
       <span id="hudPlayers">👥 1/8</span>
       <span id="hudRoom">Room —</span>
+    </div>
+    <!-- Panel room dipindah ke sini (dulu di dalam #lobby): lobby disembunyikan
+         begitu pemain join, jadi tombol Mulai di dalam lobby tidak pernah bisa
+         diklik — itulah bug "menunggu host memulai terus". -->
+    <div id="roomInfo" class="panel" hidden>
+      <p>Kode room: <strong id="roomCode" class="code"></strong>
+        <button id="btnCopyCode" class="btn small">📋 Salin</button></p>
+      <p class="hint">Bagikan kode ini ke temanmu (maks 8 pemain)!</p>
+      <ul id="playerList" class="player-list"></ul>
+      <button id="btnStart" class="btn primary big" hidden>▶️ Mulai Balapan</button>
+      <p id="waitHost" class="hint">Menunggu host memulai balapan…</p>
     </div>
     <div id="game-container"></div>
     <div id="countdown" class="countdown" hidden></div>
