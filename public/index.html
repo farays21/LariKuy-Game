@@ -22,6 +22,12 @@
       <span>Nama kamu</span>
       <input id="playerName" type="text" maxlength="16" placeholder="cth: Budi" autocomplete="off">
     </label>
+    <!-- Pemilih skin (v0.2.0 Fitur 4): warna + bentuk, diisi game.js, tersimpan di localStorage -->
+    <div class="skin-picker">
+      <p class="skin-label">🎨 Skin kamu:</p>
+      <div id="colorPicker" class="row skin-row" role="group" aria-label="Pilih warna"></div>
+      <div id="shapePicker" class="row skin-row" role="group" aria-label="Pilih bentuk"></div>
+    </div>
     <div class="row">
       <button id="btnCreate" class="btn primary">➕ Buat Room</button>
       <input id="roomCodeInput" type="text" maxlength="4" placeholder="Kode room" autocomplete="off">
@@ -33,8 +39,10 @@
       <ul>
         <li><b>Gerak:</b> A / D atau ← / → (di HP: tombol ◀ ▶ di bawah layar)</li>
         <li><b>Lompat:</b> Spasi / W / ↑ (di HP: tombol ⤒)</li>
+        <li>Pilih warna &amp; bentuk karaktermu di lobby — tersimpan otomatis, jadi tidak perlu pilih ulang.</li>
         <li>Jatuh ke jurang = kembali ke checkpoint terakhir.</li>
         <li>Kena palu putar = terpental! Lewati platform bergerak dengan sabar.</li>
+        <li>Host bisa pilih map di panel room: <b>Map 2 "Badai"</b> punya bola raksasa dari belakang, lantai es licin 🧊, pintu buka-tutup 🚪, dan kipas angin 💨.</li>
         <li>Siapa duluan melewati garis finish, dia juaranya 🏆</li>
       </ul>
     </details>
@@ -47,6 +55,10 @@
       <span id="hudPlace">—</span>
       <span id="hudPlayers">👥 1/8</span>
       <span id="hudRoom">Room —</span>
+      <span id="hudMode" hidden>🏁 Balapan Sekali</span>
+      <!-- Mode penonton (v0.2.0 Fitur 5): tampil hanya saat jadi penonton -->
+      <span id="hudSpectate" hidden>👁️ Nonton: —</span>
+      <button id="btnSpectateNext" class="btn small" type="button" title="Ganti pemain yang ditonton" hidden>⏭️ Ganti Tontonan</button>
       <button id="btnMute" class="btn small" type="button" title="Nyalakan/matikan suara">🔊</button>
     </div>
     <!-- Progress bar balapan (v0.1.4): lintasan start→finish, penanda
@@ -54,7 +66,7 @@
     <div id="progressBar" aria-label="Progress balapan">
       <div class="progress-track">
         <span class="progress-marker" style="left:0%">▶</span>
-        <span class="progress-marker" style="left:50.9%" title="Checkpoint">✅</span>
+        <span class="progress-marker" id="progressCheckpoint" style="left:50.9%" title="Checkpoint">✅</span>
         <span class="progress-marker" style="left:100%">🏁</span>
         <div id="progressDots"></div>
       </div>
@@ -67,12 +79,43 @@
         <button id="btnCopyCode" class="btn small">📋 Salin</button></p>
       <p class="hint">Bagikan kode ini ke temanmu (maks 8 pemain)!</p>
       <ul id="playerList" class="player-list"></ul>
+      <!-- Pemilih map (v0.2.0): hanya host, hanya saat lobby — dikontrol game.js -->
+      <div id="mapPicker" hidden>
+        <p class="map-label">🗺️ Pilih map:</p>
+        <div class="row map-row">
+          <button id="btnMap1" class="btn small map-btn selected" type="button">🗺️ Map 1 Klasik</button>
+          <button id="btnMap2" class="btn small map-btn" type="button">🌪️ Map 2 Badai</button>
+        </div>
+      </div>
+      <!-- Pemilih mode (v0.2.0 Fitur 2): hanya host, hanya saat lobby -->
+      <div id="modePicker" hidden>
+        <p class="map-label">🎮 Mode main:</p>
+        <div class="row map-row">
+          <button id="btnModeRace" class="btn small map-btn selected" type="button">🏁 Balapan Sekali</button>
+          <button id="btnModeElim" class="btn small map-btn" type="button">💀 Eliminasi</button>
+        </div>
+        <p class="hint">Eliminasi: 2 pemain terlambat gugur tiap round, sampai tersisa 1 juara. Min. 3 pemain.</p>
+      </div>
+      <!-- Kontrol bot (v0.2.0 Fitur 3): hanya host, hanya saat lobby -->
+      <div id="botPicker" hidden>
+        <label class="bot-fill"><input type="checkbox" id="chkFillBots"> 🤖 Isi bot sampai 6 pemain</label>
+        <p class="hint">Bot lari sendiri dari server — bisa dikalahkan, kadang jatuh di jurang!</p>
+      </div>
+      <p id="modeLine" class="hint">Mode: 🏁 Balapan Sekali</p>
       <button id="btnStart" class="btn primary big" hidden>▶️ Mulai Balapan</button>
       <p id="waitHost" class="hint">Menunggu host memulai balapan…</p>
     </div>
     <div id="game-container"></div>
     <div id="countdown" class="countdown" hidden></div>
     <div id="toast" class="toast" hidden></div>
+
+    <!-- Panel antar-round eliminasi (v0.2.0 Fitur 2): siapa gugur / lolos -->
+    <div id="roundPanel" class="panel" hidden>
+      <h2 id="roundPanelTitle">💀 Round Selesai</h2>
+      <p id="roundPanelSub" class="hint"></p>
+      <ul id="roundPanelList" class="player-list"></ul>
+      <p id="roundPanelNext" class="hint"></p>
+    </div>
 
     <div id="touchControls">
       <button id="touchLeft" class="touch-btn">◀</button>
@@ -83,7 +126,7 @@
 
     <!-- Hasil akhir -->
     <div id="results" class="panel" hidden>
-      <h2>🏆 Hasil Balapan</h2>
+      <h2 id="resultsTitle">🏆 Hasil Balapan</h2>
       <ol id="resultsList"></ol>
       <button id="btnAgain" class="btn primary">🔄 Main Lagi (kembali ke lobby)</button>
     </div>

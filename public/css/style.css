@@ -48,6 +48,21 @@ body.in-game .topbar, body.in-game footer { display: none; }
 .player-list { list-style: none; padding: 0; margin: 6px 0; }
 .player-list li { padding: 4px 8px; border-bottom: 1px dashed #ccc; font-weight: 600; }
 .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #222; margin-right: 8px; vertical-align: -2px; }
+/* Pemilih skin (v0.2.0 Fitur 4): 1 baris warna + 1 baris bentuk, ringkas di lobby. */
+.skin-picker { margin: 2px 0 10px; }
+.skin-label { margin: 0 0 4px; font-weight: 700; }
+.skin-row { gap: 6px; margin-bottom: 6px; }
+.color-btn {
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid #222;
+  cursor: pointer; padding: 0; box-shadow: 2px 2px 0 #222; position: relative; flex-shrink: 0;
+}
+.color-btn.selected { outline: 3px solid #222; outline-offset: 1px; }
+.color-btn.selected::after {
+  content: '✓'; position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: #fff; font-size: 14px; font-weight: 900;
+  text-shadow: 0 1px 2px #000;
+}
+.shape-btn.selected { background: #2ed573; }
 .howto { margin-top: 10px; }
 /* Lobby boleh scroll di dalam panelnya sendiri kalau layar pendek, halaman tetap diam. */
 #lobby { flex: 1; min-height: 0; overflow-y: auto; }
@@ -57,6 +72,13 @@ body.in-game .topbar, body.in-game footer { display: none; }
 #hud { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; align-items: center; flex-shrink: 0; }
 #hud span { background: #fff; border: 2px solid #222; border-radius: 999px; padding: 3px 10px; font-weight: 700; font-size: .9rem; box-shadow: 2px 2px 0 #222; }
 #btnMute { padding: 3px 10px; font-size: .9rem; box-shadow: 2px 2px 0 #222; }
+/* Mode penonton (v0.2.0 Fitur 5): label + tombol ganti tontonan, ringkas di HUD. */
+#hudSpectate { background: #e8f8ff; }
+#btnSpectateNext { padding: 3px 10px; font-size: .9rem; box-shadow: 2px 2px 0 #222; }
+/* Dot progress bar & nama di daftar pemain bisa diklik untuk ganti tontonan
+   (hanya berpengaruh saat jadi penonton). */
+.progress-dot { cursor: pointer; }
+.player-list li[data-player-id] { cursor: pointer; }
 /* Progress bar balapan (v0.1.4): ringkas, muat dalam layout 100dvh, tanpa scroll. */
 #progressBar { flex-shrink: 0; height: 42px; background: #fff; border: 2px solid #222; border-radius: 999px; box-shadow: 2px 2px 0 #222; padding: 0 12px; }
 .progress-track { position: relative; height: 100%; }
@@ -70,6 +92,21 @@ body.in-game .topbar, body.in-game footer { display: none; }
 /* Panel room saat lobby: ringkas, daftar pemain scroll di dalam kalau rame. */
 #roomInfo { flex-shrink: 0; padding: 10px 14px; max-height: 42%; overflow-y: auto; }
 #roomInfo p { margin: 4px 0; }
+/* Kontrol bot (v0.2.0 Fitur 3): checkbox isi bot, ringkas di #roomInfo. */
+#botPicker { margin: 6px 0; }
+#botPicker p { margin: 2px 0 4px; }
+.bot-fill { font-weight: 700; cursor: pointer; display: block; }
+.bot-fill input { width: 18px; height: 18px; vertical-align: -3px; cursor: pointer; }
+#mapPicker { margin: 6px 0; }
+#mapPicker p { margin: 2px 0 4px; }
+/* Pemilih mode (v0.2.0 Fitur 2): sama ringkasnya, berbagi gaya .map-btn. */
+#modePicker { margin: 6px 0; }
+#modePicker p { margin: 2px 0 4px; }
+#modeLine { margin: 2px 0; font-weight: 700; color: #333; }
+.player-list li.eliminated { color: #999; text-decoration: line-through; }
+.map-row { gap: 6px; }
+.map-btn { padding: 6px 10px; font-size: .9rem; }
+.map-btn.selected { background: #2ed573; }
 #game-container {
   flex: 1; min-height: 0;
   border: 3px solid #222; border-radius: 16px; overflow: hidden;
@@ -99,6 +136,10 @@ body.in-game .topbar, body.in-game footer { display: none; }
 @media (pointer: coarse) { #touchControls { display: flex; } }
 #results { flex-shrink: 0; max-height: 45%; overflow-y: auto; }
 #resultsList li { font-size: 1.1rem; padding: 4px 0; }
+/* Panel antar-round eliminasi (v0.2.0 Fitur 2): ringkas seperti #results. */
+#roundPanel { flex-shrink: 0; max-height: 45%; overflow-y: auto; padding: 10px 14px; }
+#roundPanel h2 { margin-bottom: 4px; }
+#roundPanel p { margin: 4px 0; }
 footer { text-align: center; color: #555; font-size: .85rem; flex-shrink: 0; }
 /* Layar pendek (HP landscape / laptop kecil): sembunyikan teks yang tidak penting. */
 @media (max-height: 700px) {
