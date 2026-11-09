@@ -540,12 +540,26 @@
   const TAUNT_EMOJIS = ['😂', '💨', '😭', '🔥', '👏', '😎', '🤣'];
   const chatPanelEl = $('chatPanel'), chatLogEl = $('chatLog'), chatInputEl = $('chatInput');
   const emojiRowEl = $('emojiRow'), btnChatToggleEl = $('btnChatToggle');
-  let chatOpen = true;
+  // Chat TERTUTUP secara default (v0.3.2, seperti <details> Cara Main di lobby):
+  // yang kelihatan cuma header, hemat ~150px di HP. Badge angka di header
+  // memberi tahu ada pesan baru saat chat tertutup.
+  let chatOpen = false;
+  let chatUnread = 0;
+  let loadingChatHistory = false;
+  function updateChatToggleLabel() {
+    if (!btnChatToggleEl) return;
+    btnChatToggleEl.textContent = chatOpen
+      ? '💬 Chat ▾'
+      : '💬 Chat ▸' + (chatUnread > 0 ? ' • ' + chatUnread : '');
+  }
   function setChatOpen(open) {
     chatOpen = !!open;
+    if (chatOpen) chatUnread = 0; // dibuka = pesan sudah dibaca, badge hilang
     if (chatPanelEl) chatPanelEl.classList.toggle('collapsed', !chatOpen);
-    if (btnChatToggleEl) btnChatToggleEl.textContent = chatOpen ? '💬 Chat ▾' : '💬 Chat ▸';
+    updateChatToggleLabel();
   }
+  // Terapkan keadaan awal (tertutup) begitu script jalan.
+  setChatOpen(false);
   function renderChatMessage(m) {
     if (!chatLogEl) return;
     const div = document.createElement('div');
@@ -560,6 +574,12 @@
     chatLogEl.appendChild(div);
     while (chatLogEl.children.length > 50) chatLogEl.removeChild(chatLogEl.firstChild);
     chatLogEl.scrollTop = chatLogEl.scrollHeight;
+    // Pesan baru saat chat tertutup (bukan pesan sendiri, bukan riwayat lama)
+    // = naikkan badge di header supaya tidak kelewat.
+    if (!chatOpen && !loadingChatHistory && (m.name || '') !== myName) {
+      chatUnread += 1;
+      updateChatToggleLabel();
+    }
   }
   function sendChat() {
     if (!chatInputEl) return;
@@ -616,9 +636,9 @@
     lobbyEl.hidden = true;
     gameSectionEl.hidden = false;
     resultsEl.hidden = true;
-    // Chat (v0.3.0): panel terlihat setelah join room, terbuka di lobby.
+    // Chat (v0.3.2): panel terlihat setelah join room, TERTUTUP secara default.
     if (chatPanelEl) chatPanelEl.hidden = false;
-    setChatOpen(true);
+    setChatOpen(false);
     resetProgress();
     updateProgressDot(d.playerId, { name: myName, colorHex: d.colorHex, x: START_X, finished: false });
     applyMap(d.map, 'lobby');
@@ -728,7 +748,10 @@
   socket.on('chatMessage', (m) => renderChatMessage(m));
   socket.on('chatHistory', (d) => {
     if (chatLogEl) chatLogEl.innerHTML = '';
+    // Riwayat lama bukan pesan baru — jangan naikkan badge.
+    loadingChatHistory = true;
     (d.messages || []).forEach(renderChatMessage);
+    loadingChatHistory = false;
   });
   socket.on('taunt', (d) => {
     if (scene) scene.showTaunt(d.playerId, d.emoji);

@@ -77,6 +77,7 @@ Item power-up ngambang di tengah map, 3 titik per map (di atas tanah, bukan di a
 * **Anti-spam:** rate-limit sederhana di server — maks **1 pesan/detik dan 1 taunt/detik per pemain** (kelebihan dibuang diam-diam). Panjang pesan dibatasi 140 karakter. Tidak ada filter kata kasar.
 * **Taunt penonton:** penonton (sudah finish/gugur) tetap boleh chat & taunt; emoji taunt muncul di atas kepala **karakter si pemilik taunt sendiri** (bukan yang sedang ditonton) — karakter penonton tetap terlihat berdiri di map.
 * **Tidak mengganggu gerak:** saat input chat fokus, keyboard tidak menggerakkan karakter (guard di handler `keydown` — Enter ditangani input-nya sendiri). Panel chat bisa dibuka/tutup (tombol 💬 Chat ▾/▸), log scroll internal (maks ~84 px), dan **diciutkan otomatis saat balapan** supaya canvas lega, lalu dibuka lagi saat balapan selesai. Layout tetap tanpa scroll (body overflow hidden).
+* **Tertutup secara default (v0.3.2):** seperti `<details>` Cara Main di lobby — yang terlihat hanya header `💬 Chat ▸`, hemat ~150 px di HP. Pesan baru saat tertutup menaikkan **badge angka** di header (`💬 Chat ▸ • 3`); badge hilang begitu chat dibuka. Riwayat lama saat join tidak menaikkan badge.
 
 ## Map 3 "Angkasa" 🌌 (v0.3.0)
 
