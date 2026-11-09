@@ -42,9 +42,23 @@ const MAP_GROUND = {
   map2: [[0, 700], [860, 1500], [1660, 2300], [2460, 3100], [3260, 3900], [4060, 4800]],
   map3: [[0, 650], [800, 1400], [1550, 2200], [2350, 2950], [3100, 3750], [3900, 4800]],
 };
-const MAP_CHECKPOINT = { map1: 2400, map2: 2250, map3: 2200 };
-// Zona rintangan (x palu / pintu / laser) per map — bot kadang "jatuh" di sini (5%).
-const MAP_HAZARDS = { map1: [1500, 2950], map2: [1200, 2900, 3400], map3: [1100, 2600, 3400] };
+const MAP_CHECKPOINT = { map1: 2400, map2: 2250, map3: 1650 };
+// Zona rintangan per map — DIPISAH per jenis karena efek ke bot beda:
+//  - MAP_HAMMERS: palu; bot 30% MATI (respawn ke checkpoint) saat pertama
+//    kali melewati palu per round.
+//  - MAP_LASERS: laser Map 3; hanya berbahaya saat NYALA
+//    ((Date.now() % 3000) < 1500 — rumus yang sama dengan client:
+//    (serverTime % period) < onMs); kalau nyala, bot 50% MATI, kalau mati
+//    bot lewat aman. Bot TIDAK punya perisai (mengabaikan power-up).
+//  - MAP_DOORS: pintu Map 2; BUKAN hazard mati — perilaku lama dipertahankan:
+//    5% bot "jatuh" ke checkpoint saat pertama kali dilewati per round.
+// Satu zona hanya di-roll SEKALI per round (botHazards): bot yang mati &
+// respawn melewati zona yang sama dengan aman — anti-loop.
+const MAP_HAMMERS = { map1: [1500, 2950], map2: [1200, 3400], map3: [1900] };
+const MAP_LASERS = { map3: [1100, 2600, 3400] };
+const MAP_DOORS = { map2: [2900] };
+const LASER_PERIOD_MS = 3000; // periode nyala-mati laser (sinkron dengan client)
+const LASER_ON_MS = 1500; // laser nyala 1,5 dtk pertama tiap periode
 
 // ---------- Power-up (v0.3.0) ----------
 // Jenis: speed (⚡ boost 3 dtk), double (🦘 lompat ganda 5 dtk),
@@ -97,7 +111,11 @@ const BOT_FILL_TARGET = 6; // checkbox "isi bot" mengisi sampai total 6 pemain
 const BOT_NAMES = ['Raka', 'Sinta', 'Budi', 'Dewi', 'Agus', 'Maya', 'Rudi', 'Lina'];
 const BOT_JUMP_AHEAD_PX = 120; // mulai lompat saat ujung tanah < 120 px di depan
 const BOT_FALL_PER_GAP = 0.08; // 8% lompatan jurang gagal -> kembali ke checkpoint
-const BOT_FALL_PER_HAZARD = 0.05; // 5% jatuh saat melewati zona palu/pintu
+const BOT_FALL_PER_HAMMER = 0.30; // 30% mati saat melewati palu
+const BOT_FALL_PER_LASER = 0.50; // 50% mati saat melewati laser yang sedang NYALA
+const BOT_FALL_PER_DOOR = 0.05; // 5% jatuh saat melewati pintu Map 2 (perilaku lama)
+const BOT_STUCK_MS = 3000; // bot tanpa progres >5 px selama ini = stuck -> respawn
+const BOT_STUCK_MIN_PROGRESS_PX = 5; // ambang progres x per cek anti-stuck
 
 // Warna karakter, satu per pemain (dipakai juga client untuk sprite).
 const COLORS = [
@@ -134,7 +152,8 @@ function pickColor(room, wanted) {
 //          roundTimer: Timeout|null, nextRoundTimer: Timeout|null,
 //          elimHistory: [{round, eliminated: [playerId]}] }
 // Player = { id, name, color, x, y, vx, vy, finished, finishTime, isHost, eliminated,
-//            isBot?, botSpeed?, botRespawnX?, botJumpTargetX?, botFallAt?, botHazards? }
+//            isBot?, botSpeed?, botRespawnX?, botJumpTargetX?, botFallAt?, botHazards?,
+//            botLastProgressX?, botStuckSince? }
 const rooms = new Map();
 
 // Map round eliminasi (v0.3.0): round 1 = map pilihan host (baseMap),
@@ -215,6 +234,8 @@ function makeBot(room) {
     finished: false, finishTime: null, isHost: false, eliminated: false,
     isBot: true, botSpeed: speed, botRespawnX: 100,
     botJumpTargetX: null, botFallAt: null, botHazards: new Set(),
+    // Pelacak anti-stuck: x terjauh yang dicapai + sejak kapan tidak progres.
+    botLastProgressX: 100, botStuckSince: null,
   };
 }
 function addBots(room, target) {
@@ -237,16 +258,24 @@ function botResetForRound(bot) {
   bot.finished = false; bot.finishTime = null;
   bot.botRespawnX = 100; bot.botJumpTargetX = null; bot.botFallAt = null;
   bot.botHazards = new Set();
+  bot.botLastProgressX = 100; bot.botStuckSince = null;
 }
 function botRespawn(bot) {
   bot.x = bot.botRespawnX; bot.y = GROUND_Y_BOT; bot.vx = 0; bot.vy = 0;
   bot.botJumpTargetX = null; bot.botFallAt = null;
+  // Respawn = mundur ke checkpoint: reset pelacak anti-stuck supaya bot
+  // yang baru jatuh tidak langsung dianggap stuck (progres dihitung ulang
+  // dari checkpoint).
+  bot.botLastProgressX = bot.x;
+  bot.botStuckSince = null;
 }
 function tickBots(room) {
   if (!rooms.has(room.code) || room.status !== 'racing') { stopBotTimer(room); return; }
   const ground = MAP_GROUND[room.map] || MAP_GROUND.map1;
   const checkpointX = MAP_CHECKPOINT[room.map] || MAP_CHECKPOINT.map1;
-  const hazards = MAP_HAZARDS[room.map] || MAP_HAZARDS.map1;
+  const hammers = MAP_HAMMERS[room.map] || MAP_HAMMERS.map1;
+  const lasers = MAP_LASERS[room.map] || [];
+  const doors = MAP_DOORS[room.map] || [];
   const bots = [...room.players.values()].filter((p) => p.isBot && !p.finished && !p.eliminated);
   for (const bot of bots) {
     if (room.status !== 'racing') return; // balapan bisa berakhir di tengah tick
@@ -261,9 +290,15 @@ function tickBots(room) {
     // sampai mendarat di segmen berikutnya (target = awal segmen + 10 px,
     // jadi lompatan selalu cukup jauh melewati jurang selebar apa pun);
     // 8% lompatan gagal.
+    // PERTAHANAN tepi jurang: bot yang berdiri TEPAT di ujung segmen
+    // (distToEnd == 0 — mis. respawn di checkpoint lama Map 3 x=2200 yang
+    // tepat di ujung segmen [1550,2200]) tidak memenuhi syarat
+    // `distToEnd > 0` di atas; tanpa ini bot jalan lurus keluar segmen,
+    // jatuh, respawn ke ujung yang sama, dan mengulang selamanya.
+    // Di ujung segmen, langsung lompat ke segmen berikutnya (atau gagal 8%).
     if (seg && segIdx < ground.length - 1 && !bot.botJumpTargetX && !bot.botFallAt) {
       const distToEnd = seg[1] - bot.x;
-      if (distToEnd < BOT_JUMP_AHEAD_PX && distToEnd > 0) {
+      if ((distToEnd < BOT_JUMP_AHEAD_PX && distToEnd > 0) || distToEnd <= 0) {
         if (Math.random() < BOT_FALL_PER_GAP) bot.botFallAt = seg[1];
         else bot.botJumpTargetX = ground[segIdx + 1][0] + 10;
       }
@@ -273,19 +308,62 @@ function tickBots(room) {
     if (bot.botJumpTargetX && bot.x >= bot.botJumpTargetX) bot.botJumpTargetX = null; // mendarat
     bot.y = bot.botJumpTargetX ? 500 : GROUND_Y_BOT;
     // Lompatan gagal: begitu mencapai ujung tanah, jatuh -> checkpoint.
-    if (bot.botFallAt && bot.x >= bot.botFallAt) { botRespawn(bot); }
+    // fellThisTick = bot teleport karena jatuh (bukan jalan kaki), jadi
+    // zona hazard TIDAK di-roll di tick ini.
+    let fellThisTick = false;
+    if (bot.botFallAt && bot.x >= bot.botFallAt) { botRespawn(bot); fellThisTick = true; }
     // Bot di luar segmen tanah tanpa sedang melompat = jatuh ke jurang.
     else if (!bot.botJumpTargetX) {
       const onGround = ground.some(([a, b]) => bot.x >= a && bot.x <= b);
-      if (!onGround && bot.x > 0) botRespawn(bot);
+      if (!onGround && bot.x > 0) { botRespawn(bot); fellThisTick = true; }
     }
-    // Rintangan lain: tiap zona palu/pintu yang dilewati pertama kali di
-    // round ini, 5% bot "jatuh" -> kembali ke checkpoint.
-    for (const hz of hazards) {
-      if (prevX < hz && bot.x >= hz && !bot.botHazards.has(hz)) {
-        bot.botHazards.add(hz);
-        if (Math.random() < BOT_FALL_PER_HAZARD) { botRespawn(bot); break; }
+    // Rintangan: tiap zona hanya di-roll SEKALI per round (botHazards,
+    // kunci 'jenis:x') — bot yang mati & respawn melewati zona yang sama
+    // dengan aman, jadi tidak bisa mati berulang di tempat yang sama.
+    // Palu 30% mati; laser hanya saat NYALA, 50% mati; pintu Map 2 5%
+    // jatuh (perilaku lama). Mati = botRespawn biasa ke checkpoint.
+    if (!fellThisTick) {
+      let diedThisTick = false;
+      for (const hz of hammers) {
+        if (prevX < hz && bot.x >= hz && !bot.botHazards.has('hammer:' + hz)) {
+          bot.botHazards.add('hammer:' + hz);
+          if (Math.random() < BOT_FALL_PER_HAMMER) { botRespawn(bot); diedThisTick = true; break; }
+        }
       }
+      if (!diedThisTick) {
+        // Laser nyala 1,5 dtk pertama tiap periode 3 dtk (jam server,
+        // rumus sama dengan client); kalau mati, bot lewat aman.
+        const laserOn = (Date.now() % LASER_PERIOD_MS) < LASER_ON_MS;
+        for (const hz of lasers) {
+          if (prevX < hz && bot.x >= hz && !bot.botHazards.has('laser:' + hz)) {
+            bot.botHazards.add('laser:' + hz);
+            if (laserOn && Math.random() < BOT_FALL_PER_LASER) { botRespawn(bot); diedThisTick = true; break; }
+          }
+        }
+      }
+      if (!diedThisTick) {
+        for (const hz of doors) {
+          if (prevX < hz && bot.x >= hz && !bot.botHazards.has('door:' + hz)) {
+            bot.botHazards.add('door:' + hz);
+            if (Math.random() < BOT_FALL_PER_DOOR) { botRespawn(bot); break; }
+          }
+        }
+      }
+    }
+    // PENGAMAN ANTI-STUCK (semua map): kalau x bot tidak bertambah >5 px
+    // selama 3000 ms padahal masih racing dan belum finish, paksa respawn
+    // ke checkpoint — hanya mundur, TIDAK pernah teleport maju atau
+    // finish instan. botRespawn() me-reset pelacak, jadi bot yang baru
+    // jatuh/mati tidak langsung dianggap stuck.
+    if (bot.x > (bot.botLastProgressX ?? bot.x) + BOT_STUCK_MIN_PROGRESS_PX) {
+      bot.botLastProgressX = bot.x;
+      bot.botStuckSince = null;
+    } else if (bot.botStuckSince == null) {
+      bot.botStuckSince = Date.now();
+    } else if (Date.now() - bot.botStuckSince >= BOT_STUCK_MS) {
+      botRespawn(bot);
+      bot.botLastProgressX = bot.x;
+      bot.botStuckSince = null;
     }
     // Finish bot = finish pemain biasa (otoritatif server).
     if (bot.x >= WORLD.finishX) {

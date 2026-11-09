@@ -77,7 +77,12 @@
       // Jurang di posisi berbeda dari Map 1 & 2; finish tetap x=4620.
       // Gravitasi ringan ditangani di buildWorld (750, bukan 1200).
       ground: [[0, 650], [800, 1400], [1550, 2200], [2350, 2950], [3100, 3750], [3900, 4800]],
-      checkpointX: 2200,
+      // v0.3.1: checkpoint 1650 (dulu 2200, tepat di ujung segmen tanah
+      // [1550,2200] — bot respawn di tepi jurang, tidak memicu lompat, jatuh,
+      // respawn lagi, loop/stuck). 1650 ada di tengah segmen [1550,2200] dan
+      // 250 px dari palu Map 3 di x=1900 (di luar jangkauan palu 140 +
+      // radius kena 55 = 195). HARUS sama dengan MAP_CHECKPOINT.map3 server.
+      checkpointX: 1650,
       // Platform melayang: banyak pijakan di udara (bukan cuma tanah datar).
       platforms: [[950, 470], [1450, 380], [1900, 470], [2500, 430], [2950, 370], [3400, 470], [4100, 440]],
       hammers: [
@@ -95,7 +100,8 @@
       // Tema luar angkasa: tanah abu-abu keunguan, atas platform ungu.
       groundColor: 0x5a5a7a, topColor: 0xb388ff,
       // Laser nyala-mati berkala (siklus 3 dtk: 1,5 dtk nyala, 1,5 dtk mati),
-      // dari y=380 sampai tanah. Kena = terpental (seperti palu).
+      // dari y=380 sampai tanah. Kena saat nyala = mati + respawn checkpoint
+      // (v0.3.1, dulu terpental seperti palu); perisai menahan 1x.
       lasers: [
         { x: 1100, topY: 380, period: 3000, onMs: 1500 },
         { x: 2600, topY: 380, period: 3000, onMs: 1500 },
@@ -476,8 +482,9 @@
   // - ⚡ Speed Boost: lari x1,5 selama 3 detik.
   // - 🦘 Lompat Ganda: 1x lompat tambahan di udara, selama 5 detik.
   // - 🛡️ Perisai: tahan 1x serangan (palu / bola / laser), lalu hilang.
-  // - SEMUA efek hilang saat jatuh/respawn ke checkpoint dan saat round
-  //   baru dimulai. Bot mengabaikan power-up (tidak mengambil).
+  // - SEMUA efek hilang saat jatuh/respawn ke checkpoint, saat mati kena
+  //   palu/laser (v0.3.1, lewat dieToCheckpoint), dan saat round baru dimulai.
+  //   Bot mengabaikan power-up (tidak mengambil).
   const POWERUP_INFO = {
     speed: { icon: '⚡', label: 'Speed Boost' },
     double: { icon: '🦘', label: 'Lompat Ganda' },
@@ -1379,6 +1386,25 @@
 
     endRace() { this.racing = false; }
 
+    // --- Mati + respawn checkpoint (v0.3.1): kena palu / laser ---
+    // Dipakai blok palu & laser di update(). Perisai TIDAK ditangani di sini
+    // — pemanggil sudah cek consumeShield() dulu; helper ini hanya jalan
+    // kalau tidak ada perisai. Semua efek power-up hilang (sama seperti
+    // jatuh ke jurang), SFX jatuh, toast sesuai penyebab.
+    // `checkpoint` sudah berisi start {x:100,y:500} kalau pemain belum pernah
+    // mencapai checkpoint (di-reset di raceStarted/startRace), jadi tidak
+    // pernah respawn ke posisi kosong.
+    // Guard penonton: finished / gugur tidak bisa mati (pemanggil juga sudah
+    // guard this.racing && !finished && !amEliminated — ini pertahanan ganda).
+    dieToCheckpoint(reason) {
+      if (!this.racing || finished || amEliminated || !this.player) return;
+      this.player.setPosition(checkpoint.x, checkpoint.y).setVelocity(0, 0);
+      clearMyEffects();
+      SFX.fall();
+      if (reason === 'laser') showToast('💀 Kena laser! Mati, respawn checkpoint');
+      else showToast('🔨 Kena palu! Mati, respawn checkpoint');
+    }
+
     // --- Pemain remote (termasuk bot): sprite sesuai warna+bentuk dari server ---
     // Bentuk disimpan per sprite; kalau berubah (misal data roomUpdate lebih
     // baru), tekstur diganti tanpa membuat sprite baru. Kombinasi yang belum
@@ -1533,13 +1559,11 @@
           const d = distToSegment(p.x, p.y, h.x, h.y, tipX, tipY);
           if (d < 55 && time - this.hammerHitAt > 900) {
             this.hammerHitAt = time;
-            // Perisai (v0.3.0) menahan 1x serangan palu — tidak terpental.
-            if (!consumeShield()) {
-              const dir = p.x < h.x ? -1 : 1;
-              p.setVelocity(dir * 420, -480);
-              SFX.hammer();
-              showToast('💥 Kena palu! Terpental!');
-            }
+            // v0.3.1: kena palu = MATI + respawn checkpoint (dulu terpental).
+            // Perisai menahan 1x serangan (consumeShield true = tidak mati).
+            // Cooldown 900 ms dipertahankan supaya tidak mati berkali-kali
+            // dalam 1 frame. Checkpoint aman dari palu — lihat dieToCheckpoint.
+            if (!consumeShield()) this.dieToCheckpoint('hammer');
           }
         }
       });
@@ -1591,7 +1615,8 @@
 
       // --- Laser nyala-mati (Map 3): siklus dari serverTime (deterministik) ---
       // Nyala selama onMs pertama tiap periode, lalu mati. Kena laser saat
-      // nyala = terpental (seperti palu); perisai menahan 1x.
+      // nyala = MATI + respawn checkpoint (v0.3.1, dulu terpental);
+      // perisai menahan 1x. Cooldown 900 ms dipertahankan.
       (this.laserObjs || []).forEach((lz) => {
         const on = (t % lz.def.period) < lz.def.onMs;
         if (on !== lz._on) {
@@ -1603,12 +1628,7 @@
           const inBeam = p.y > lz.topY && p.y < GROUND_Y + 10;
           if (nearX && inBeam && time - this.laserHitAt > 900) {
             this.laserHitAt = time;
-            if (!consumeShield()) {
-              const dir = p.x < lz.x ? -1 : 1;
-              p.setVelocity(dir * 420, -480);
-              SFX.hammer();
-              showToast('⚡ Kena laser! Terpental!');
-            }
+            if (!consumeShield()) this.dieToCheckpoint('laser');
           }
         }
       });

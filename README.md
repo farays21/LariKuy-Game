@@ -44,7 +44,7 @@ Lalu buka **http://localhost:3000** di browser.
 4. Kontrol:
    * **Gerak:** `A` / `D` atau `←` / `→` (di HP: tombol ◀ ▶)
    * **Lompat:** `Spasi` / `W` / `↑` (di HP: tombol ⤒)
-5. Jatuh ke jurang = kembali ke checkpoint terakhir. Kena palu putar = terpental!
+5. Jatuh ke jurang = kembali ke checkpoint terakhir. Kena palu putar / laser (saat nyala) = **mati, langsung respawn di checkpoint terakhir** (v0.3.1 — dulu hanya terpental; perisai 🛡️ tetap menahan 1x). Kena bola raksasa Map 2 = tetap terpental.
 6. Siapa duluan melewati garis finish 🏁 dia juaranya. Hasil akhir menampilkan urutan + waktu tiap pemain.
 
 ## Power-up ⚡🦘🛡️ (v0.3.0)
@@ -84,8 +84,8 @@ Tema luar angkasa, beda dari Map 1 Klasik & Map 2 Badai. Host memilih Map 3 di p
 
 * **Gravitasi ringan:** `physics.world.gravity.y = 750` saat mapId = `map3` (map lain 1200) — lompat lebih tinggi (~209 px vs ~130 px) dan melayang lebih lama di udara. Jurang tetap bisa dilompati (celah maks 150 px).
 * **Platform melayang:** 7 platform di udara (y 370–470) selain tanah datar — bisa dipijak sebagai jalan pintas / tempat aman.
-* **Laser nyala-mati ⚡:** 3 laser vertikal (x 1100, 2600, 3400, dari y=380 sampai tanah), siklus **3 detik (1,5 dtk nyala, 1,5 dtk mati)** dari `serverTime` (deterministik, sama di semua layar). Kena laser saat nyala = **terpental** seperti kena palu (bukan respawn — lebih ringan); perisai menahan 1x.
-* **Layout:** tanah `[[0,650],[800,1400],[1550,2200],[2350,2950],[3100,3750],[3900,4800]]`, checkpoint x=2200, finish tetap x=4620, panjang dunia tetap 4800. Tanah berwarna abu-abu keunguan + bintang-bintang di langit.
+* **Laser nyala-mati ⚡:** 3 laser vertikal (x 1100, 2600, 3400, dari y=380 sampai tanah), siklus **3 detik (1,5 dtk nyala, 1,5 dtk mati)** dari `serverTime` (deterministik, sama di semua layar). Kena laser saat nyala = **mati, langsung respawn di checkpoint terakhir** (v0.3.1 — dulu hanya terpental); perisai menahan 1x. Sama seperti kena palu putar: kena palu = mati + respawn checkpoint (bukan lagi terpental), perisai tetap menahan 1x. Bola raksasa Map 2 tidak berubah: kena = tetap terpental.
+* **Layout:** tanah `[[0,650],[800,1400],[1550,2200],[2350,2950],[3100,3750],[3900,4800]]`, checkpoint x=1650 (v0.3.1 — dulu x=2200, tepat di ujung segmen tanah `[1550,2200]` sehingga bot respawn di tepi jurang, tidak memicu lompat, jatuh, respawn lagi, loop/stuck; 1650 ada di tengah segmen dan 250 px dari palu Map 3 di x=1900, di luar jangkauan palu), finish tetap x=4620, panjang dunia tetap 4800. Tanah berwarna abu-abu keunguan + bintang-bintang di langit.
 * **Mode Eliminasi:** map bergantian per round mengikuti urutan **Map 1 → Map 2 → Map 3 → ulang** (round 1 = map pilihan host, lalu map berikutnya dalam urutan `MAP_ORDER`). Misal host pilih Map 1 → R1 Map 1, R2 Map 2, R3 Map 3, R4 Map 1, dst. (v0.2.0 hanya bergantian 2 map; v0.3.0 memakai `mapForRound` berbasis `MAP_ORDER`.)
 * **Power-up di Map 3:** 3 titik di x 950, 2000, 3200 (di atas tanah, jauh dari laser) — sama seperti map lain, respawn 10 detik.
 * **Bot di Map 3:** bot memakai segmen tanah & checkpoint Map 3 yang sama (`MAP_GROUND`/`MAP_CHECKPOINT` di server), laser dihitung sebagai zona hazard (5% jatuh) seperti palu/pintu.
@@ -135,7 +135,7 @@ Sendirian tapi mau balapan rame-rame? Host bisa mengisi room dengan bot.
 * **Identitas:** nama bot jelas dari daftar tetap — `Bot Raka`, `Bot Sinta`, `Bot Budi`, `Bot Dewi`, `Bot Agus`, `Bot Maya`, `Bot Rudi`, `Bot Lina` (nama yang sudah dipakai manusia dilewati, tidak bentrok). Warna diambil dari warna yang belum dipakai, seperti pemain manusia. Di `publicPlayers`/`roomUpdate` bot punya field `isBot: true`; di daftar pemain, progress bar, label sprite Phaser, dan hasil akhir bot tampil dengan label 🤖.
 * **Kontrol:** event baru `setFillBots` `{fill: boolean}` — hanya host, hanya saat lobby; di luar itu diabaikan. Server menyimpan `fillBots` dan broadcast lewat `roomUpdate` `{fillBots}` supaya checkbox di semua layar sinkron. Total pemain (manusia + bot) tetap maks 8.
 * **Gerakan:** server men-tick bot **~10 Hz** (interval per room, hanya saat status `racing`; dihentikan saat finish/round berakhir/kembali ke lobby/room kosong). Tiap bot punya kecepatan lari sendiri **180–260 px/dtk**, diacak sekali saat dibuat dan tetap selama round. Bot bergerak ke kanan (`x` bertambah), `y` mengikuti tanah (`y=616`).
-* **Lompat jurang:** server punya definisi segmen tanah per map (`MAP_GROUND`, sinkron dengan `MAPS` di `public/js/game.js`; checkpoint per map di `MAP_CHECKPOINT` — Map 1: 2400, Map 2: 2250). Saat ujung tanah di depan sudah dekat (<120 px) dan di depannya ada jurang, bot "melompat": `y` naik ke ~500 dan tetap di udara sampai mendarat di segmen tanah berikutnya, `x` terus maju melewati jurang.
+* **Lompat jurang:** server punya definisi segmen tanah per map (`MAP_GROUND`, sinkron dengan `MAPS` di `public/js/game.js`; checkpoint per map di `MAP_CHECKPOINT` — Map 1: 2400, Map 2: 2250, Map 3: 1650 (v0.3.1, dulu 2200 — tepat di ujung tanah sehingga bot stuck di loop respawn/jatuh)). Saat ujung tanah di depan sudah dekat (<120 px) dan di depannya ada jurang, bot "melompat": `y` naik ke ~500 dan tetap di udara sampai mendarat di segmen tanah berikutnya, `x` terus maju melewati jurang. Pengaman anti-stuck (v0.3.1, server-side): bot yang posisi x-nya tidak bertambah >5 px selama 3 detik padahal race masih jalan dipaksa respawn kembali ke checkpoint (hanya mundur, tidak pernah teleport maju). Ditambah pertahanan tepi jurang: bot yang tepat di ujung segmen tanah langsung lompat ke segmen berikutnya.
 * **Bisa dikalahkan:** tiap lompatan jurang punya peluang gagal **8%** — bot jatuh dan kembali ke checkpoint terakhir (start/checkpoint map aktif). Selain itu, tiap zona palu/pintu yang dilewati pertama kali di satu round (`MAP_HAZARDS` — Map 1: x 1500 & 2950; Map 2: x 1200, 2900 & 3400) punya peluang jatuh **5%** → kembali ke checkpoint. Bot tidak mensimulasikan fisika rintangan secara penuh; tujuannya bot bisa dikalahkan manusia, bukan mustahil dikalahkan.
 * **Finish & eliminasi:** saat bot `x >= 4620` (finishX), server mencatat finish persis seperti pemain biasa (`finishTime`, `results`, emit `playerFinished` untuk bot itu) dan bot ikut menentukan akhir round/balapan. Di mode eliminasi bot dihitung sebagai pemain aktif (batas minimal 3 pemain, 2 gugur per round) — bot bisa gugur maupun juara seperti manusia.
 * **Tampil di layar:** posisi bot di-broadcast lewat event `playersMoved` yang **sama** seperti pemain remote (id, name, color, colorHex, x, y, `isBot: true`) — client tidak butuh kode khusus selain label 🤖; sprite remote Phaser dan progress bar menampilkan bot otomatis. `roomUpdate` juga dikirim berkala ~1 detik selama balapan supaya `x` bot di daftar pemain tetap segar.
@@ -161,7 +161,7 @@ Layout map didefinisikan terpusat di `MAPS` pada `public/js/game.js` (server han
 
 | | Map 1 Klasik | Map 2 Badai 🌪️ | Map 3 Angkasa 🌌 (v0.3.0) |
 |---|---|---|---|
-| Checkpoint | x=2400 | x=2250 | x=2200 |
+| Checkpoint | x=2400 | x=2250 | x=1650 (v0.3.1, dulu 2200) |
 | Jurang | 6 segmen tanah | 6 segmen tanah di posisi berbeda | 6 segmen tanah di posisi berbeda |
 | Rintangan khusus | — | Bola raksasa, lantai es, pintu dorong, kipas angin | Laser nyala-mati, platform melayang |
 | Gravitasi | 1200 | 1200 | 750 (lebih ringan) |
