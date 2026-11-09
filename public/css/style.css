@@ -74,6 +74,8 @@ body.in-game .topbar, body.in-game footer { display: none; }
 #btnMute { padding: 3px 10px; font-size: .9rem; box-shadow: 2px 2px 0 #222; }
 /* Mode penonton (v0.2.0 Fitur 5): label + tombol ganti tontonan, ringkas di HUD. */
 #hudSpectate { background: #e8f8ff; }
+/* Power-up aktif (v0.3.0): label HUD kuning, tampil hanya saat ada efek. */
+#hudPowerup { background: #fff7ae; }
 #btnSpectateNext { padding: 3px 10px; font-size: .9rem; box-shadow: 2px 2px 0 #222; }
 /* Dot progress bar & nama di daftar pemain bisa diklik untuk ganti tontonan
    (hanya berpengaruh saat jadi penonton). */
@@ -127,6 +129,19 @@ body.in-game .topbar, body.in-game footer { display: none; }
   background: #2ed573; color: #fff; font-weight: 800; padding: 8px 18px;
   border: 2px solid #222; border-radius: 999px; box-shadow: 3px 3px 0 #222; z-index: 20;
 }
+/* Chat room + taunt (v0.3.0): panel kecil di bawah canvas, log scroll
+   internal saja (halaman tetap tanpa scroll). Saat diciutkan, hanya header
+   toggle yang terlihat. */
+#chatPanel { flex-shrink: 0; padding: 8px 10px; max-height: 180px; display: flex; flex-direction: column; gap: 6px; }
+#chatPanel[hidden] { display: none; }
+.chat-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#chatLog { max-height: 84px; overflow-y: auto; font-size: .9rem; display: flex; flex-direction: column; gap: 2px; }
+.chat-msg { word-break: break-word; }
+#emojiRow { display: flex; gap: 4px; flex-wrap: wrap; }
+.emoji-btn { font-size: 1rem; padding: 4px 8px; }
+.chat-input-row { flex-wrap: nowrap; }
+#chatInput { flex: 1; min-width: 0; padding: 8px 10px; border: 2px solid #222; border-radius: 10px; font-size: .95rem; }
+#chatPanel.collapsed #chatLog, #chatPanel.collapsed #emojiRow, #chatPanel.collapsed .chat-input-row { display: none; }
 #touchControls { display: none; justify-content: space-between; flex-shrink: 0; }
 .touch-btn {
   width: 60px; height: 60px; font-size: 1.6rem; border-radius: 50%;

@@ -3,9 +3,12 @@
 Balapan platformer 2D multiplayer ala Fall Guys — lari, lompat, hindari rintangan, siapa duluan sampai finish!
 
 * **6–8 pemain** per room, masuk pakai kode room 4 huruf
-* **2 map panjang** side-scrolling (v0.2.0): host memilih map di lobby sebelum start
+* **3 map panjang** side-scrolling (v0.2.0 + v0.3.0): host memilih map di lobby sebelum start
   * **Map 1 Klasik:** jurang, palu putar, platform bergerak, checkpoint, garis finish
   * **Map 2 Badai 🌪️:** jurang di posisi berbeda + bola raksasa yang menggelinding dari belakang, lantai es licin 🧊, pintu dorong buka-tutup 🚪, dan kipas angin 💨 — semua deterministik pakai jam server
+  * **Map 3 Angkasa 🌌** (v0.3.0): gravitasi ringan (lompat lebih tinggi & melayang), platform melayang, laser nyala-mati ⚡ — lihat bagian Map 3 di bawah
+* **Power-up ⚡🦘🛡️** (v0.3.0): item ngambang di tengah map — Speed Boost, Lompat Ganda, Perisai — lihat bagian Power-up di bawah
+* **Chat room + emoji/taunt 💬😂** (v0.3.0): kirim pesan ke room + taunt cepat, emoji melayang di atas kepala karakter — lihat bagian Chat di bawah
 * **Countdown 3-2-1-GO**, timer balapan, dan urutan finish ditentukan server
 * Rintangan bergerak **deterministik pakai jam server**, jadi semua pemain melihat gerakan yang sama
 * Bisa dimainkan di HP (tombol sentuh) maupun keyboard
@@ -44,6 +47,49 @@ Lalu buka **http://localhost:3000** di browser.
 5. Jatuh ke jurang = kembali ke checkpoint terakhir. Kena palu putar = terpental!
 6. Siapa duluan melewati garis finish 🏁 dia juaranya. Hasil akhir menampilkan urutan + waktu tiap pemain.
 
+## Power-up ⚡🦘🛡️ (v0.3.0)
+
+Item power-up ngambang di tengah map, 3 titik per map (di atas tanah, bukan di atas jurang — posisi per map ada di `POWERUP_SPOTS` di `server.js`):
+
+| Item | Efek | Durasi |
+|---|---|---|
+| ⚡ Speed Boost | Kecepatan lari x1,5 (280 → 420 px/dtk) | 3 detik |
+| 🦘 Lompat Ganda | Bisa lompat 1x tambahan di udara | 5 detik |
+| 🛡️ Perisai | Tahan 1x serangan (palu / bola raksasa / laser), lalu hilang | Sampai dipakai |
+
+**Cara kerja (server otoritatif, `server.js`):**
+
+* Server menyimpan state item per room (`room.powerups`: `{slot, x, y, type, active}`), di-spawn di awal tiap round (`initPowerups` di `startRound`) dan di-broadcast lewat event `powerups` `{powerups: [{slot, x, y, type, icon, active}]}` — juga dikirim ulang saat ada yang mengambil dan saat item respawn.
+* Client mendeteksi pemain lokal mendekati item (< 90 px) lalu mengirim `powerupPickup` `{slot}` (dibatasi 1 klaim per slot per 500 ms). Server memvalidasi: item harus masih aktif **dan** posisi terakhir pemain (dari event `move` terakhir) harus dalam **140 px** dari item — klaim dari jauh / item yang sudah habis ditolak diam-diam (anti-curang sederhana).
+* Item yang diambil hilang, lalu **respawn setelah 10 detik dengan jenis diacak** (timer server per item, dibersihkan saat round/lobby berakhir supaya tidak bocor).
+* Efek diterapkan client untuk pemain lokal (kecepatan di `update()`, lompat ganda pakai edge detection tombol lompat + `airJumps` yang direset saat mendarat, perisai dicek di tiap serangan palu/bola/laser lewat `consumeShield()`). Efek pemain lain terlihat lewat ikon kecil di label sprite-nya (misal `⚡ Budi`) — dikirim lewat event `powerupTaken` `{slot, playerId, name, type, icon}`. Efek sendiri tampil di HUD (`#hudPowerup`, misal "⚡ Boost 3 dtk · 🛡️ Perisai").
+* **Aturan hilang efek:** semua efek hilang saat jatuh/respawn ke checkpoint dan saat round baru dimulai. SFX baru (Web Audio, tanpa file): nada naik saat mengambil power-up, bunyi pecah saat perisai menahan serangan.
+* **Bot mengabaikan power-up** (tidak mengambil item) — bot tetap jalan seperti biasa dan tidak merusak state power-up. Power-up jalan di kedua map (1, 2, 3) dan kedua mode (race & eliminasi).
+
+## Chat Room + Emoji / Taunt 💬😂 (v0.3.0)
+
+**Cara pakai:** setelah join room, panel chat ada di bawah canvas. Ketik pesan (maks 140 karakter) lalu Enter / tombol Kirim — pesan tampil dengan nama + warna pengirim. Klik tombol emoji (😂 💨 😭 🔥 👏 😎 🤣) untuk taunt cepat: taunt muncul sebagai pesan chat ("Budi: 😂") **dan** sebagai emoji melayang di atas kepala karakter pemain itu di Phaser selama ~2 detik, terlihat semua pemain di room.
+
+**Cara kerja (server + client):**
+
+* Event baru: `chatMessage` `{text}` (client → server) dan `chatMessage` `{id, name, colorHex, text, ts}` (server → room), `taunt` `{emoji}` (client → server) dan `taunt` `{playerId, name, colorHex, emoji}` (server → room). Server hanya broadcast ke **room yang sama** (`io.to(room.code)`), bukan ke room lain.
+* **Riwayat:** server menyimpan maks **30 pesan terakhir per room** di memori (`room.chat`, tanpa database — hilang saat room kosong/dihapus). Pemain yang baru join menerima riwayat lewat event `chatHistory` `{messages}`.
+* **Anti-spam:** rate-limit sederhana di server — maks **1 pesan/detik dan 1 taunt/detik per pemain** (kelebihan dibuang diam-diam). Panjang pesan dibatasi 140 karakter. Tidak ada filter kata kasar.
+* **Taunt penonton:** penonton (sudah finish/gugur) tetap boleh chat & taunt; emoji taunt muncul di atas kepala **karakter si pemilik taunt sendiri** (bukan yang sedang ditonton) — karakter penonton tetap terlihat berdiri di map.
+* **Tidak mengganggu gerak:** saat input chat fokus, keyboard tidak menggerakkan karakter (guard di handler `keydown` — Enter ditangani input-nya sendiri). Panel chat bisa dibuka/tutup (tombol 💬 Chat ▾/▸), log scroll internal (maks ~84 px), dan **diciutkan otomatis saat balapan** supaya canvas lega, lalu dibuka lagi saat balapan selesai. Layout tetap tanpa scroll (body overflow hidden).
+
+## Map 3 "Angkasa" 🌌 (v0.3.0)
+
+Tema luar angkasa, beda dari Map 1 Klasik & Map 2 Badai. Host memilih Map 3 di pemilih map yang sama (Map 1 / Map 2 / Map 3, default Map 1).
+
+* **Gravitasi ringan:** `physics.world.gravity.y = 750` saat mapId = `map3` (map lain 1200) — lompat lebih tinggi (~209 px vs ~130 px) dan melayang lebih lama di udara. Jurang tetap bisa dilompati (celah maks 150 px).
+* **Platform melayang:** 7 platform di udara (y 370–470) selain tanah datar — bisa dipijak sebagai jalan pintas / tempat aman.
+* **Laser nyala-mati ⚡:** 3 laser vertikal (x 1100, 2600, 3400, dari y=380 sampai tanah), siklus **3 detik (1,5 dtk nyala, 1,5 dtk mati)** dari `serverTime` (deterministik, sama di semua layar). Kena laser saat nyala = **terpental** seperti kena palu (bukan respawn — lebih ringan); perisai menahan 1x.
+* **Layout:** tanah `[[0,650],[800,1400],[1550,2200],[2350,2950],[3100,3750],[3900,4800]]`, checkpoint x=2200, finish tetap x=4620, panjang dunia tetap 4800. Tanah berwarna abu-abu keunguan + bintang-bintang di langit.
+* **Mode Eliminasi:** map bergantian per round mengikuti urutan **Map 1 → Map 2 → Map 3 → ulang** (round 1 = map pilihan host, lalu map berikutnya dalam urutan `MAP_ORDER`). Misal host pilih Map 1 → R1 Map 1, R2 Map 2, R3 Map 3, R4 Map 1, dst. (v0.2.0 hanya bergantian 2 map; v0.3.0 memakai `mapForRound` berbasis `MAP_ORDER`.)
+* **Power-up di Map 3:** 3 titik di x 950, 2000, 3200 (di atas tanah, jauh dari laser) — sama seperti map lain, respawn 10 detik.
+* **Bot di Map 3:** bot memakai segmen tanah & checkpoint Map 3 yang sama (`MAP_GROUND`/`MAP_CHECKPOINT` di server), laser dihitung sebagai zona hazard (5% jatuh) seperti palu/pintu.
+
 ## Mode Eliminasi 💀 (v0.2.0)
 
 Host memilih **💀 Eliminasi** di lobby sebelum start (event `setMode` `{mode: 'elimination'}` — hanya host, hanya saat lobby; server menolak mode selain `'race'`/`'elimination'`, non-host, dan di luar lobby). Mode tampil di panel room (`roomUpdate` `{mode}`) dan di HUD saat balapan.
@@ -53,7 +99,7 @@ Aturan (semua otoritatif di server, `server.js`):
 * **Minimal 3 pemain** untuk memulai eliminasi. Kalau kurang, server menolak `startGame` dengan event `startError` `{message}` dan client menampilkannya sebagai toast. Mode Balapan Sekali tetap minimal 1 pemain seperti biasa.
 * **Tiap round = 1 balapan penuh.** Round berakhir saat **semua pemain yang belum gugur sudah finish**, ATAU **timeout 75 detik** sejak `raceStarted` (timer di server; saat timeout, yang belum finish dianggap kalah).
 * **2 pemain terlambat gugur** tiap round (diurutkan `finishTime`; yang belum finish saat timeout dianggap paling lambat, tiebreak = progress `x` terakhir — yang paling jauh di depan dianggap lebih cepat). Kalau pemain yang belum gugur tinggal **≤ 2 orang di awal round, hanya 1 yang gugur** (yang paling lambat), supaya final 1v1 masuk akal.
-* **Map per round bergantian:** round ganjil = map pilihan host, round genap = map lainnya (misal host pilih Map 1 → Round 1 Map 1, Round 2 Map 2, Round 3 Map 1, dst.). Server yang menentukan map round berjalan dan broadcast lewat `roomUpdate`/`raceStarted` `{map, round}`; client membangun ulang dunia lewat `GameScene.buildWorld(mapId)` sebelum countdown berikutnya.
+* **Map per round bergantian (v0.3.0):** urutan Map 1 → Map 2 → Map 3 → ulang, dimulai dari map pilihan host (misal host pilih Map 1 → Round 1 Map 1, Round 2 Map 2, Round 3 Map 3, Round 4 Map 1, dst.). Server yang menentukan map round berjalan dan broadcast lewat `roomUpdate`/`raceStarted` `{map, round}`; client membangun ulang dunia lewat `GameScene.buildWorld(mapId)` sebelum countdown berikutnya.
 * **Jeda antar-round otomatis 4 detik** (dipilih otomatis, bukan tombol host — supaya tempo permainan tetap jalan tanpa menunggu host klik). Di jeda ini client menampilkan panel antar-round: siapa gugur 💀, siapa lolos ✅, dan map round berikutnya. Lalu server otomatis memulai round berikutnya (countdown → racing).
 * **Juara:** ulangi sampai tersisa 1 pemain → server emit `eliminationFinished` `{champion: {id, name}, results}` dan client menampilkan panel juara + peringkat akhir. Kalau di final 2 orang keduanya finish, yang tercepat juara (yang paling lambat gugur di round final itu).
 * **Pemain gugur = penonton:** `player.eliminated = true`, disertakan di `publicPlayers` + event `roundEnded` `{round, eliminated: [{id, name}], survivors: [{id, name}], results}`. Client menandai mereka 💀 di daftar pemain, menampilkan label HUD "💀 Kamu gugur — jadi penonton", dan **tidak mengizinkan gerak/lompat/kirim posisi** selama round berjalan. Kameranya mengikuti pemain yang masih balapan — lihat bagian Mode Penonton di bawah.
@@ -113,11 +159,12 @@ Sebelum masuk room, pilih tampilan karaktermu di lobby — **8 warna** (merah, b
 
 Layout map didefinisikan terpusat di `MAPS` pada `public/js/game.js` (server hanya tahu id + nama map, untuk validasi & broadcast). Panjang dunia dan garis finish sama di semua map (4800 px / x=4620).
 
-| | Map 1 Klasik | Map 2 Badai 🌪️ |
-|---|---|---|
-| Checkpoint | x=2400 | x=2250 |
-| Jurang | 6 segmen tanah | 6 segmen tanah di posisi berbeda |
-| Rintangan khusus | — | Bola raksasa, lantai es, pintu dorong, kipas angin |
+| | Map 1 Klasik | Map 2 Badai 🌪️ | Map 3 Angkasa 🌌 (v0.3.0) |
+|---|---|---|---|
+| Checkpoint | x=2400 | x=2250 | x=2200 |
+| Jurang | 6 segmen tanah | 6 segmen tanah di posisi berbeda | 6 segmen tanah di posisi berbeda |
+| Rintangan khusus | — | Bola raksasa, lantai es, pintu dorong, kipas angin | Laser nyala-mati, platform melayang |
+| Gravitasi | 1200 | 1200 | 750 (lebih ringan) |
 
 Rintangan Map 2 (semua deterministik dari `serverTime`, jadi sama di semua layar):
 

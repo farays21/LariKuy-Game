@@ -42,7 +42,9 @@
         <li>Pilih warna &amp; bentuk karaktermu di lobby — tersimpan otomatis, jadi tidak perlu pilih ulang.</li>
         <li>Jatuh ke jurang = kembali ke checkpoint terakhir.</li>
         <li>Kena palu putar = terpental! Lewati platform bergerak dengan sabar.</li>
-        <li>Host bisa pilih map di panel room: <b>Map 2 "Badai"</b> punya bola raksasa dari belakang, lantai es licin 🧊, pintu buka-tutup 🚪, dan kipas angin 💨.</li>
+        <li>Host bisa pilih map di panel room: <b>Map 2 "Badai"</b> punya bola raksasa dari belakang, lantai es licin 🧊, pintu buka-tutup 🚪, dan kipas angin 💨. <b>Map 3 "Angkasa"</b> gravitasinya ringan (lompat lebih tinggi), banyak platform melayang, dan laser nyala-mati ⚡.</li>
+        <li>Ambil <b>power-up</b> di tengah map: ⚡ Speed Boost, 🦘 Lompat Ganda, 🛡️ Perisai anti-serangan.</li>
+        <li><b>Chat &amp; taunt:</b> kirim pesan ke room atau klik emoji 😂💨🔥 — taunt muncul di atas kepala karaktermu.</li>
         <li>Siapa duluan melewati garis finish, dia juaranya 🏆</li>
       </ul>
     </details>
@@ -53,6 +55,7 @@
     <div id="hud">
       <span id="hudTimer">⏱ 0.0 dtk</span>
       <span id="hudPlace">—</span>
+      <span id="hudPowerup" hidden></span>
       <span id="hudPlayers">👥 1/8</span>
       <span id="hudRoom">Room —</span>
       <span id="hudMode" hidden>🏁 Balapan Sekali</span>
@@ -85,6 +88,7 @@
         <div class="row map-row">
           <button id="btnMap1" class="btn small map-btn selected" type="button">🗺️ Map 1 Klasik</button>
           <button id="btnMap2" class="btn small map-btn" type="button">🌪️ Map 2 Badai</button>
+          <button id="btnMap3" class="btn small map-btn" type="button">🌌 Map 3 Angkasa</button>
         </div>
       </div>
       <!-- Pemilih mode (v0.2.0 Fitur 2): hanya host, hanya saat lobby -->
@@ -123,6 +127,21 @@
       <button id="touchJump" class="touch-btn jump">⤒</button>
     </div>
     <p class="hint center">A/D gerak · Spasi lompat · Jatuh = respawn di checkpoint</p>
+
+    <!-- Chat room + taunt (v0.3.0): panel kecil, log scroll internal,
+         diciutkan otomatis saat balapan supaya canvas tetap lega. -->
+    <div id="chatPanel" class="panel" hidden>
+      <div class="chat-header">
+        <button id="btnChatToggle" class="btn small" type="button">💬 Chat ▾</button>
+        <span class="hint">Enter = kirim · maks 140 karakter</span>
+      </div>
+      <div id="chatLog" aria-live="polite"></div>
+      <div id="emojiRow" role="group" aria-label="Taunt cepat"></div>
+      <div class="row chat-input-row">
+        <input id="chatInput" type="text" maxlength="140" placeholder="Tulis pesan… (Enter kirim)" autocomplete="off">
+        <button id="btnChatSend" class="btn small primary" type="button">Kirim</button>
+      </div>
+    </div>
 
     <!-- Hasil akhir -->
     <div id="results" class="panel" hidden>

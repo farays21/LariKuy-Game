@@ -72,6 +72,36 @@
       // Kipas angin di ujung map: zona x 4100-4400, dorong ke kiri + angkat.
       fan: { x1: 4100, x2: 4400, topY: 380, pushX: 160, lift: 24 },
     },
+    map3: {
+      id: 'map3', name: 'Map 3 Angkasa',
+      // Jurang di posisi berbeda dari Map 1 & 2; finish tetap x=4620.
+      // Gravitasi ringan ditangani di buildWorld (750, bukan 1200).
+      ground: [[0, 650], [800, 1400], [1550, 2200], [2350, 2950], [3100, 3750], [3900, 4800]],
+      checkpointX: 2200,
+      // Platform melayang: banyak pijakan di udara (bukan cuma tanah datar).
+      platforms: [[950, 470], [1450, 380], [1900, 470], [2500, 430], [2950, 370], [3400, 470], [4100, 440]],
+      hammers: [
+        { x: 1900, len: 140, speed: 1000, phase: 0 },
+      ],
+      movers: [
+        { x: 720, y: 540, axis: 'x', amp: 60, period: 1100, phase: 0 },
+        { x: 3820, y: 540, axis: 'y', amp: 55, period: 1300, phase: Math.PI / 2 },
+      ],
+      bumpers: [[2700, 600]],
+      ice: [],
+      ball: null,
+      doors: [],
+      fan: null,
+      // Tema luar angkasa: tanah abu-abu keunguan, atas platform ungu.
+      groundColor: 0x5a5a7a, topColor: 0xb388ff,
+      // Laser nyala-mati berkala (siklus 3 dtk: 1,5 dtk nyala, 1,5 dtk mati),
+      // dari y=380 sampai tanah. Kena = terpental (seperti palu).
+      lasers: [
+        { x: 1100, topY: 380, period: 3000, onMs: 1500 },
+        { x: 2600, topY: 380, period: 3000, onMs: 1500 },
+        { x: 3400, topY: 380, period: 3000, onMs: 1500 },
+      ],
+    },
   };
 
   // Helper DOM — HARUS didefinisikan paling atas: v0.1.4 sempat memanggil $()
@@ -183,6 +213,9 @@
       fanfare() { [523, 659, 784, 1047].forEach((f, i) => tone({ freq: f, dur: 0.18, delay: i * 0.12 })); },
       otherFinish() { tone({ freq: 988, dur: 0.15 }); tone({ freq: 1175, dur: 0.2, delay: 0.1 }); },
       boing() { tone({ freq: 200, freqEnd: 600, dur: 0.2, vol: 0.18 }); },
+      // Power-up (v0.3.0): nada naik saat mengambil, bunyi pecah saat perisai habis.
+      powerup() { [660, 880, 1320].forEach((f, i) => tone({ freq: f, dur: 0.12, delay: i * 0.07 })); },
+      shieldBreak() { tone({ freq: 220, freqEnd: 70, dur: 0.25, type: 'sawtooth', vol: 0.2 }); },
     };
   })();
   // Buka kunci audio saat interaksi pertama (klik / sentuh / tombol keyboard).
@@ -265,7 +298,7 @@
   const lobbyErrorEl = $('lobbyError'), roomInfoEl = $('roomInfo');
   const playerListEl = $('playerList'), resultsEl = $('results'), resultsListEl = $('resultsList');
   const countdownEl = $('countdown'), toastEl = $('toast');
-  const mapPickerEl = $('mapPicker'), btnMap1El = $('btnMap1'), btnMap2El = $('btnMap2');
+  const mapPickerEl = $('mapPicker'), btnMap1El = $('btnMap1'), btnMap2El = $('btnMap2'), btnMap3El = $('btnMap3');
   const modePickerEl = $('modePicker'), btnModeRaceEl = $('btnModeRace'), btnModeElimEl = $('btnModeElim');
   const botPickerEl = $('botPicker'), chkFillBotsEl = $('chkFillBots');
   const modeLineEl = $('modeLine'), hudModeEl = $('hudMode');
@@ -284,6 +317,7 @@
   function updateMapPicker(mapId) {
     if (btnMap1El) btnMap1El.classList.toggle('selected', mapId === 'map1');
     if (btnMap2El) btnMap2El.classList.toggle('selected', mapId === 'map2');
+    if (btnMap3El) btnMap3El.classList.toggle('selected', mapId === 'map3');
   }
   // Penanda checkpoint di progress bar ikut checkpoint map yang dipilih.
   function updateCheckpointMarker(mapId) {
@@ -432,6 +466,127 @@
     applySpectateTarget(id);
     SFX.click();
   }
+
+  // ---------- Power-up (v0.3.0) ----------
+  // Server otoritatif (lihat server.js): server menyimpan state item per
+  // room, broadcast lewat 'powerups', dan memvalidasi klaim (item aktif +
+  // jarak pemain < 140 px). Client hanya me-render item, mendeteksi
+  // kedekatan pemain lokal, dan menerapkan efeknya secara lokal.
+  // Aturan efek (lihat README):
+  // - ⚡ Speed Boost: lari x1,5 selama 3 detik.
+  // - 🦘 Lompat Ganda: 1x lompat tambahan di udara, selama 5 detik.
+  // - 🛡️ Perisai: tahan 1x serangan (palu / bola / laser), lalu hilang.
+  // - SEMUA efek hilang saat jatuh/respawn ke checkpoint dan saat round
+  //   baru dimulai. Bot mengabaikan power-up (tidak mengambil).
+  const POWERUP_INFO = {
+    speed: { icon: '⚡', label: 'Speed Boost' },
+    double: { icon: '🦘', label: 'Lompat Ganda' },
+    shield: { icon: '🛡️', label: 'Perisai' },
+  };
+  let powerupsState = []; // [{slot,x,y,type,icon,active}] dari server
+  let myEffects = { speedUntil: 0, doubleUntil: 0, shield: false };
+  let airJumps = 0; // lompat tambahan di udara yang sudah dipakai (reset saat mendarat)
+  let prevJumpKey = false; // edge detection tombol lompat (lompat ganda 1x per tekan)
+  let remoteEffects = {}; // id -> {type, until, shield} (indikator di label sprite)
+  let lastPickupSent = {}; // slot -> waktu terakhir kirim klaim (anti-spam)
+  function applyMyPowerup(type) {
+    const now = Date.now();
+    if (type === 'speed') myEffects.speedUntil = now + 3000;
+    else if (type === 'double') myEffects.doubleUntil = now + 5000;
+    else if (type === 'shield') myEffects.shield = true;
+    SFX.powerup();
+    updatePowerupHud();
+  }
+  function clearMyEffects() {
+    myEffects = { speedUntil: 0, doubleUntil: 0, shield: false };
+    airJumps = 0;
+    updatePowerupHud();
+  }
+  function updatePowerupHud() {
+    const el = $('hudPowerup');
+    if (!el) return;
+    const now = Date.now();
+    const parts = [];
+    if (myEffects.speedUntil > now) parts.push('⚡ Boost ' + Math.ceil((myEffects.speedUntil - now) / 1000) + ' dtk');
+    if (myEffects.doubleUntil > now) parts.push('🦘 Lompat x2 ' + Math.ceil((myEffects.doubleUntil - now) / 1000) + ' dtk');
+    if (myEffects.shield) parts.push('🛡️ Perisai');
+    el.hidden = parts.length === 0;
+    el.textContent = parts.join(' · ');
+  }
+  // Perisai menahan 1x serangan: kembalikan true kalau serangan ditahan
+  // (perisai habis), false kalau tidak ada perisai (serangan berlaku).
+  function consumeShield() {
+    if (!myEffects.shield) return false;
+    myEffects.shield = false;
+    SFX.shieldBreak();
+    showToast('🛡️ Perisai menahan serangan!');
+    updatePowerupHud();
+    return true;
+  }
+
+  // ---------- Chat + taunt (v0.3.0) ----------
+  // Chat room via Socket.io, hanya di room yang sama. Panel chat ada di
+  // #gameSection (terlihat setelah join room — di lobby status & in-game),
+  // bisa dibuka/tutup, log scroll internal, layout tetap tanpa scroll.
+  // Taunt penonton: emoji muncul di atas kepala karakter SI PEMILIK taunt
+  // (bukan yang ditonton) + masuk chat — lihat showTaunt() di GameScene.
+  const TAUNT_EMOJIS = ['😂', '💨', '😭', '🔥', '👏', '😎', '🤣'];
+  const chatPanelEl = $('chatPanel'), chatLogEl = $('chatLog'), chatInputEl = $('chatInput');
+  const emojiRowEl = $('emojiRow'), btnChatToggleEl = $('btnChatToggle');
+  let chatOpen = true;
+  function setChatOpen(open) {
+    chatOpen = !!open;
+    if (chatPanelEl) chatPanelEl.classList.toggle('collapsed', !chatOpen);
+    if (btnChatToggleEl) btnChatToggleEl.textContent = chatOpen ? '💬 Chat ▾' : '💬 Chat ▸';
+  }
+  function renderChatMessage(m) {
+    if (!chatLogEl) return;
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    const name = document.createElement('b');
+    name.textContent = (m.name || '?') + ': ';
+    name.style.color = m.colorHex || '#222';
+    const txt = document.createElement('span');
+    txt.textContent = m.text || '';
+    div.appendChild(name);
+    div.appendChild(txt);
+    chatLogEl.appendChild(div);
+    while (chatLogEl.children.length > 50) chatLogEl.removeChild(chatLogEl.firstChild);
+    chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  }
+  function sendChat() {
+    if (!chatInputEl) return;
+    const text = chatInputEl.value.trim();
+    if (!text) return;
+    socket.emit('chatMessage', { text: text.slice(0, 140) });
+    chatInputEl.value = '';
+  }
+  // Tombol emoji taunt: klik = kirim taunt ke server (server yang broadcast
+  // 'taunt' + pesan chat ke semua pemain di room).
+  if (emojiRowEl) {
+    TAUNT_EMOJIS.forEach((e) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn small emoji-btn';
+      b.textContent = e;
+      b.title = 'Kirim taunt ' + e;
+      b.addEventListener('click', () => {
+        SFX.unlock(); SFX.click();
+        socket.emit('taunt', { emoji: e });
+      });
+      emojiRowEl.appendChild(b);
+    });
+  }
+  if (btnChatToggleEl) btnChatToggleEl.addEventListener('click', () => { SFX.unlock(); SFX.click(); setChatOpen(!chatOpen); });
+  if (chatInputEl) {
+    chatInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
+      e.stopPropagation(); // jangan sampai tombol lain ikut bereaksi saat mengetik
+    });
+  }
+  const btnChatSendEl = $('btnChatSend');
+  if (btnChatSendEl) btnChatSendEl.addEventListener('click', () => { SFX.unlock(); SFX.click(); sendChat(); });
+
   socket.on('connect', () => { $('connStatus').textContent = '🟢 terhubung'; });
   socket.on('disconnect', () => { $('connStatus').textContent = '🔴 terputus'; });
   socket.on('timeSync', (d) => { serverTimeOffset = d.serverTime - Date.now(); });
@@ -454,6 +609,9 @@
     lobbyEl.hidden = true;
     gameSectionEl.hidden = false;
     resultsEl.hidden = true;
+    // Chat (v0.3.0): panel terlihat setelah join room, terbuka di lobby.
+    if (chatPanelEl) chatPanelEl.hidden = false;
+    setChatOpen(true);
     resetProgress();
     updateProgressDot(d.playerId, { name: myName, colorHex: d.colorHex, x: START_X, finished: false });
     applyMap(d.map, 'lobby');
@@ -511,6 +669,12 @@
     if (d.mode === 'race') amEliminated = false; // balapan sekali: tidak ada yang gugur
     finished = false; finishSent = false;
     checkpoint = { x: START_X, y: 500 };
+    // Power-up (v0.3.0): efek & item round lama dibersihkan saat round baru.
+    clearMyEffects();
+    remoteEffects = {};
+    powerupsState = [];
+    // Chat (v0.3.0): panel diciutkan otomatis saat balapan supaya canvas lega.
+    setChatOpen(false);
     resetProgress();
     updateProgressDot(myId, { name: myName, colorHex: '#' + COLORS[myColor].toString(16).padStart(6, '0'), x: START_X, finished: false });
     countdownEl.textContent = 'GO! 🏁';
@@ -529,6 +693,38 @@
     remoteTargets[d.id] = { x: d.x, y: d.y, name: d.name, color: d.color, colorHex: d.colorHex, shape: d.shape, isBot: d.isBot };
     updateProgressDot(d.id, d);
     if (scene) scene.updateRemote(d.id, d);
+  });
+
+  // ---------- Power-up: state item & efek (v0.3.0) ----------
+  socket.on('powerups', (d) => {
+    powerupsState = d.powerups || [];
+    if (scene) scene.syncPowerups(powerupsState);
+  });
+  socket.on('powerupTaken', (d) => {
+    const info = POWERUP_INFO[d.type] || { icon: '⭐', label: 'Power-up' };
+    if (d.playerId === myId) {
+      applyMyPowerup(d.type);
+      showToast(info.icon + ' Kamu dapat ' + info.label + '!');
+    } else {
+      // Indikator efek pemain lain: ikon di label sprite-nya (lihat updateRemote).
+      remoteEffects[d.playerId] = {
+        type: d.type,
+        until: Date.now() + (d.type === 'speed' ? 3000 : d.type === 'double' ? 5000 : 60000),
+        shield: d.type === 'shield',
+      };
+      if (scene) scene.refreshRemoteEffect(d.playerId);
+      showToast(info.icon + ' ' + d.name + ' dapat ' + info.label + '!');
+    }
+  });
+
+  // ---------- Chat + taunt (v0.3.0) ----------
+  socket.on('chatMessage', (m) => renderChatMessage(m));
+  socket.on('chatHistory', (d) => {
+    if (chatLogEl) chatLogEl.innerHTML = '';
+    (d.messages || []).forEach(renderChatMessage);
+  });
+  socket.on('taunt', (d) => {
+    if (scene) scene.showTaunt(d.playerId, d.emoji);
   });
 
   socket.on('playerLeft', (d) => {
@@ -554,6 +750,7 @@
 
   socket.on('raceFinished', (d) => {
     roomStatus = 'finished';
+    setChatOpen(true); // balapan selesai: chat dibuka lagi
     (d.results || []).forEach((r) => updateProgressDot(r.id, { x: FINISH_X, finished: true, place: r.place }));
     if (resultsTitleEl) resultsTitleEl.textContent = '🏆 Hasil Balapan';
     resultsEl.hidden = false;
@@ -611,6 +808,7 @@
 
   socket.on('eliminationFinished', (d) => {
     roomStatus = 'finished';
+    setChatOpen(true); // eliminasi selesai: chat dibuka lagi
     if (scene) scene.endRace();
     updateSpectator(); // mode penonton berakhir, panel juara tampil
     if (d.champion && d.champion.id === myId) SFX.fanfare(); else SFX.otherFinish();
@@ -755,6 +953,10 @@
     SFX.unlock(); SFX.click();
     if (isHost) socket.emit('setMap', { map: 'map2' });
   });
+  if (btnMap3El) btnMap3El.addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
+    if (isHost) socket.emit('setMap', { map: 'map3' });
+  });
   // Kontrol bot: checkbox dikirim ke server, server yang menambah/menghapus bot.
   if (chkFillBotsEl) chkFillBotsEl.addEventListener('change', () => {
     SFX.unlock(); SFX.click();
@@ -778,6 +980,9 @@
   // ---------- Input (keyboard + sentuh) ----------
   const keys = { left: false, right: false, jump: false };
   window.addEventListener('keydown', (e) => {
+    // Chat (v0.3.0): saat input chat fokus, mengetik JANGAN menggerakkan
+    // karakter (Enter ditangani listener input-nya sendiri).
+    if (chatInputEl && document.activeElement === chatInputEl) return;
     if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
     if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
     if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') { keys.jump = true; e.preventDefault(); }
@@ -875,6 +1080,11 @@
       this.lastJumpSfxAt = 0;
       this.checkpointReached = false;
       this.remoteSprites = {}; // id -> {sprite, label}
+      this.tauntTexts = {}; // id -> teks emoji melayang (v0.3.0)
+      this.powerupObjs = {}; // slot -> {bg, label} item power-up (v0.3.0)
+      this.laserObjs = []; // {beam, x, topY, def, _on} (Map 3)
+      this.laserHitAt = 0;
+      this._lastPowHud = 0;
       // State dunia (diisi buildWorld, dihancurkan tiap rebuild).
       this.worldObjs = [];
       this.worldColliders = [];
@@ -1009,15 +1219,34 @@
       this.hammers = [];
       this.bumpers = [];
       this.doorObjs = [];
+      this.laserObjs = [];
       this.ballImg = null;
       this.fanImg = null;
       const add = (o) => { this.worldObjs.push(o); return o; };
+      // Gravitasi per map (v0.3.0 Map 3 "Angkasa"): 750 = lebih ringan,
+      // lompat lebih tinggi & melayang lebih lama; map lain tetap 1200.
+      this.physics.world.gravity.y = mapId === 'map3' ? 750 : 1200;
+      // Item power-up round lama disembunyikan sampai server kirim state baru.
+      Object.values(this.powerupObjs || {}).forEach((o) => {
+        if (o.bg) o.bg.setVisible(false);
+        if (o.label) o.label.setVisible(false);
+      });
+
+      // --- Bintang (Map 3 Angkasa): titik-titik putih di langit ---
+      if (mapId === 'map3') {
+        for (let i = 0; i < 40; i++) {
+          const sx = (i * 373 + 60) % WORLD_WIDTH;
+          const sy = 30 + ((i * 97) % 300);
+          add(this.add.circle(sx, sy, (i % 3) + 1, 0xffffff, 0.9)).setDepth(-1);
+        }
+        add(this.add.text(60, GROUND_Y - 215, '🌌 Gravitasi ringan! Lompat lebih tinggi & melayang', { fontSize: '16px', color: '#e0c8ff', fontStyle: 'bold' }));
+      }
 
       // --- Tanah: segmen dengan jurang di antaranya ---
       def.ground.forEach(([x1, x2]) => {
         const w = x2 - x1, cx = x1 + w / 2;
-        const rect = add(this.add.rectangle(cx, GROUND_Y + 40, w, 80, 0x8b5a2b));
-        const top = add(this.add.rectangle(cx, GROUND_Y + 2, w, 12, 0x2ed573));
+        const rect = add(this.add.rectangle(cx, GROUND_Y + 40, w, 80, def.groundColor || 0x8b5a2b));
+        const top = add(this.add.rectangle(cx, GROUND_Y + 2, w, 12, def.topColor || 0x2ed573));
         this.physics.add.existing(rect, true);
         this.grounds.push(rect);
         top.setDepth(1);
@@ -1092,6 +1321,16 @@
         add(this.add.text(f.x1 + 8, f.topY + 8, '💨 ◀◀◀ ANGIN!', { fontSize: '16px', color: '#0b5fa5', fontStyle: 'bold' }));
       }
 
+      // --- Laser nyala-mati (Map 3): balok vertikal dari topY sampai tanah ---
+      // State nyala/mati dihitung di update() dari serverTime (deterministik).
+      (def.lasers || []).forEach((d) => {
+        const h = GROUND_Y - d.topY;
+        const beam = add(this.add.rectangle(d.x, d.topY + h / 2, 12, h, 0xff2244, 0.85));
+        beam.setDepth(2);
+        add(this.add.text(d.x - 34, d.topY - 30, '⚡ LASER', { fontSize: '14px', color: '#ff2244', fontStyle: 'bold' }));
+        this.laserObjs.push({ beam, x: d.x, topY: d.topY, def: d, _on: true });
+      });
+
       // --- Checkpoint & finish ---
       add(this.add.rectangle(def.checkpointX, GROUND_Y - 40, 8, 90, 0x2ed573));
       add(this.add.triangle(def.checkpointX, GROUND_Y - 110, 0, 0, 0, 30, 34, 15, 0x2ed573));
@@ -1133,6 +1372,7 @@
       finished = false; finishSent = false;
       this.checkpointReached = false;
       checkpoint = { x: START_X, y: 500 };
+      clearMyEffects(); // power-up round lama tidak terbawa
       if (this.player) this.player.setPosition(START_X, 500).setVelocity(0, 0);
       if (this.waitText) this.waitText.setVisible(false);
     }
@@ -1160,13 +1400,69 @@
       }
       const r = this.remoteSprites[id];
       r.targetX = d.x; r.targetY = d.y;
-      r.label.setText((d.isBot ? '🤖 ' : '') + d.name);
+      r.label.setText((d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
       // Mode penonton (Fitur 5): target yang spritenya baru dibuat sekarang
       // (belum ada playersMoved darinya saat dipilih) langsung diikuti
       // kameranya. Kalau sprite sudah ada, kamera sudah mengikuti dari
       // applySpectateTarget — tidak perlu startFollow ulang tiap update.
       if (isNew && id === spectateTargetId) this.followSpectateTarget(id);
     }
+    // --- Power-up: ikon efek di label pemain remote (v0.3.0) ---
+    // Speed/lompat ganda tampil selama durasinya, perisai tampil sampai dipakai.
+    remoteEffectIcon(id) {
+      const eff = remoteEffects[id];
+      if (!eff) return '';
+      if (eff.type === 'shield' && eff.shield) return '🛡️ ';
+      if (eff.until && Date.now() < eff.until) return (POWERUP_INFO[eff.type] || {}).icon + ' ';
+      return '';
+    }
+    refreshRemoteEffect(id) {
+      const r = this.remoteSprites && this.remoteSprites[id];
+      if (!r) return;
+      const d = remoteTargets[id];
+      if (d) r.label.setText((d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
+    }
+    // --- Power-up: render item di map (v0.3.0) ---
+    // Dipanggil tiap server kirim 'powerups' (awal round + saat diambil +
+    // saat respawn). Item yang tidak aktif disembunyikan (bukan dihancurkan).
+    syncPowerups(list) {
+      if (!this.powerupObjs) this.powerupObjs = {};
+      (list || []).forEach((pu) => {
+        let o = this.powerupObjs[pu.slot];
+        if (!o) {
+          const bg = this.add.circle(pu.x, pu.y, 22, 0xffffff, 0.9).setStrokeStyle(3, 0x222222).setDepth(3);
+          const label = this.add.text(pu.x, pu.y, pu.icon || '⭐', { fontSize: '24px' }).setOrigin(0.5).setDepth(4);
+          o = { bg, label };
+          this.powerupObjs[pu.slot] = o;
+        }
+        o.bg.setPosition(pu.x, pu.y);
+        o.label.setPosition(pu.x, pu.y);
+        o.label.setText(pu.icon || (POWERUP_INFO[pu.type] || {}).icon || '⭐');
+        const fill = pu.type === 'speed' ? 0xffe135 : pu.type === 'double' ? 0x7cfc00 : 0x87ceeb;
+        o.bg.setFillStyle(fill, 0.9);
+        o.bg.setVisible(!!pu.active);
+        o.label.setVisible(!!pu.active);
+      });
+    }
+    // --- Taunt: emoji melayang di atas kepala pemain (v0.3.0) ---
+    // Muncul ~2 detik, mengikuti sprite target tiap frame (lihat update()).
+    // Untuk penonton, emoji muncul di atas kepala SI PEMILIK taunt, bukan
+    // yang sedang ditonton — karakter penonton sendiri tetap terlihat di map.
+    showTaunt(id, emoji) {
+      if (!this.tauntTexts) this.tauntTexts = {};
+      const old = this.tauntTexts[id];
+      if (old) old.destroy();
+      let target = null;
+      if (id === myId) target = this.player;
+      else if (this.remoteSprites[id]) target = this.remoteSprites[id].sprite;
+      if (!target) return;
+      const t = this.add.text(target.x, target.y - 64, emoji, { fontSize: '30px' }).setOrigin(0.5).setDepth(7);
+      this.tauntTexts[id] = t;
+      this.time.delayedCall(2000, () => {
+        if (this.tauntTexts[id] === t) { t.destroy(); delete this.tauntTexts[id]; }
+      });
+    }
+
     // --- Mode penonton (Fitur 5): kamera mengikuti pemain lain ---
     // Target disimpan sebagai ID di spectateTargetId (luar scene); di sini
     // hanya lookup sprite-nya. Kalau sprite belum ada, jangan follow null —
@@ -1201,6 +1497,7 @@
     removeRemote(id) {
       const r = this.remoteSprites[id];
       if (r) { r.sprite.destroy(); r.label.destroy(); delete this.remoteSprites[id]; }
+      if (this.tauntTexts && this.tauntTexts[id]) { this.tauntTexts[id].destroy(); delete this.tauntTexts[id]; }
       // Kalau yang dihapus adalah target tontonan, jangan biarkan kamera
       // mengikuti sprite yang sudah dihancurkan — kembali ke diri sendiri
       // dulu; updateSpectator() (dari handler playerLeft/roomUpdate) akan
@@ -1236,10 +1533,13 @@
           const d = distToSegment(p.x, p.y, h.x, h.y, tipX, tipY);
           if (d < 55 && time - this.hammerHitAt > 900) {
             this.hammerHitAt = time;
-            const dir = p.x < h.x ? -1 : 1;
-            p.setVelocity(dir * 420, -480);
-            SFX.hammer();
-            showToast('💥 Kena palu! Terpental!');
+            // Perisai (v0.3.0) menahan 1x serangan palu — tidak terpental.
+            if (!consumeShield()) {
+              const dir = p.x < h.x ? -1 : 1;
+              p.setVelocity(dir * 420, -480);
+              SFX.hammer();
+              showToast('💥 Kena palu! Terpental!');
+            }
           }
         }
       });
@@ -1258,10 +1558,13 @@
           const d = Math.hypot(p.x - bx, p.y - by);
           if (d < def.ball.radius + 26 && time - this.ballHitAt > 900) {
             this.ballHitAt = time;
-            const dir = p.x < bx ? -1 : 1;
-            p.setVelocity(dir * 520, -520);
-            SFX.hammer();
-            showToast('💥 Kena bola raksasa! Terpental!');
+            // Perisai (v0.3.0) menahan 1x serangan bola — tidak terpental.
+            if (!consumeShield()) {
+              const dir = p.x < bx ? -1 : 1;
+              p.setVelocity(dir * 520, -520);
+              SFX.hammer();
+              showToast('💥 Kena bola raksasa! Terpental!');
+            }
           }
         }
       }
@@ -1286,26 +1589,60 @@
       // --- Kipas angin (Map 2): baling-baling berputar dari serverTime ---
       if (this.fanImg) this.fanImg.setRotation(t / 300);
 
+      // --- Laser nyala-mati (Map 3): siklus dari serverTime (deterministik) ---
+      // Nyala selama onMs pertama tiap periode, lalu mati. Kena laser saat
+      // nyala = terpental (seperti palu); perisai menahan 1x.
+      (this.laserObjs || []).forEach((lz) => {
+        const on = (t % lz.def.period) < lz.def.onMs;
+        if (on !== lz._on) {
+          lz._on = on;
+          lz.beam.setVisible(on);
+        }
+        if (on && this.racing && !finished && !amEliminated) {
+          const nearX = Math.abs(p.x - lz.x) < 32;
+          const inBeam = p.y > lz.topY && p.y < GROUND_Y + 10;
+          if (nearX && inBeam && time - this.laserHitAt > 900) {
+            this.laserHitAt = time;
+            if (!consumeShield()) {
+              const dir = p.x < lz.x ? -1 : 1;
+              p.setVelocity(dir * 420, -480);
+              SFX.hammer();
+              showToast('⚡ Kena laser! Terpental!');
+            }
+          }
+        }
+      });
+
       // --- Gerakan pemain lokal ---
       if (this.racing && !finished && !amEliminated) {
         const onGround = p.body.touching.down || p.body.blocked.down;
+        // Power-up Speed Boost (v0.3.0): lari x1,5 selama 3 detik.
+        const spd = Date.now() < myEffects.speedUntil ? 420 : 280;
         // Lantai es: cek apakah pemain berdiri di atas segmen es map ini.
         const onIce = onGround && (def.ice || []).some(([a, b]) => p.x >= a && p.x <= b);
         if (onIce) {
           // Gesekan rendah: akselerasi lambat, dan tanpa input pemain meluncur
           // (velocity dipertahankan, hanya melambat pelan) — susah berhenti/belok.
-          if (keys.left) p.setVelocityX(Math.max(p.body.velocity.x - 18, -280));
-          else if (keys.right) p.setVelocityX(Math.min(p.body.velocity.x + 18, 280));
+          if (keys.left) p.setVelocityX(Math.max(p.body.velocity.x - 18, -spd));
+          else if (keys.right) p.setVelocityX(Math.min(p.body.velocity.x + 18, spd));
           else p.setVelocityX(p.body.velocity.x * 0.985);
         } else {
-          if (keys.left) p.setVelocityX(-280);
-          else if (keys.right) p.setVelocityX(280);
+          if (keys.left) p.setVelocityX(-spd);
+          else if (keys.right) p.setVelocityX(spd);
           else p.setVelocityX(0);
         }
-        if (keys.jump && onGround) {
+        // Lompat + Lompat Ganda (v0.3.0): lompat tambahan 1x di udara selama
+        // 5 detik, hanya saat tombol BARU ditekan (edge detection — menahan
+        // tombol tidak memicu lompat ganda berulang). airJumps direset saat mendarat.
+        const jumpPressed = keys.jump && !prevJumpKey;
+        prevJumpKey = keys.jump;
+        if (onGround) airJumps = 0;
+        const canDouble = Date.now() < myEffects.doubleUntil && airJumps < 1;
+        if (jumpPressed && (onGround || canDouble)) {
+          if (!onGround) airJumps++;
           p.setVelocityY(-560);
-          // Suara lompat hanya saat benar-benar lompat dari tanah + cooldown
-          // kecil, supaya tidak spam kalau tombol ditahan.
+          // Suara lompat hanya saat benar-benar lompat + cooldown kecil,
+          // supaya tidak spam kalau tombol ditahan.
           if (time - this.lastJumpSfxAt > 200) { this.lastJumpSfxAt = time; SFX.jump(); }
         }
 
@@ -1321,10 +1658,33 @@
         }
       } else {
         p.setVelocityX(0);
+        prevJumpKey = keys.jump; // jangan sampai lompat ganda terpicu dari tombol yang ditahan sebelum race
       }
 
       // Label nama mengikuti pemain
       this.nameLabel.setPosition(p.x, p.y - 34);
+
+      // --- Taunt: emoji melayang mengikuti sprite pemiliknya (v0.3.0) ---
+      Object.entries(this.tauntTexts || {}).forEach(([id, txt]) => {
+        const tgt = id === myId ? this.player : (this.remoteSprites[id] && this.remoteSprites[id].sprite);
+        if (tgt) txt.setPosition(tgt.x, tgt.y - 64);
+      });
+
+      // --- Power-up: ambil item saat pemain lokal mendekat (v0.3.0) ---
+      // Client hanya mendeteksi kedekatan & mengirim klaim; server yang
+      // memvalidasi (item aktif + jarak < 140 px) dan memutuskan dapat/tidak.
+      if (this.racing && !finished && !amEliminated) {
+        (powerupsState || []).forEach((pu) => {
+          if (!pu.active) return;
+          const d = Math.hypot(p.x - pu.x, p.y - pu.y);
+          if (d < 90 && time - (lastPickupSent[pu.slot] || 0) > 500) {
+            lastPickupSent[pu.slot] = time;
+            socket.emit('powerupPickup', { slot: pu.slot });
+          }
+        });
+      }
+      // HUD efek power-up (sisa detik) diperbarui maks ~5 Hz.
+      if (time - this._lastPowHud > 200) { this._lastPowHud = time; updatePowerupHud(); }
 
       // --- Checkpoint (pakai checkpointX map yang aktif) ---
       if (this.racing && !this.checkpointReached && !amEliminated && p.x >= def.checkpointX) {
@@ -1341,6 +1701,7 @@
       // jatuh sampai y > 780 di luar layar.
       if (p.y > WORLD_HEIGHT - 20) {
         p.setPosition(checkpoint.x, checkpoint.y).setVelocity(0, 0);
+        clearMyEffects(); // jatuh = semua efek power-up hilang
         SFX.fall();
         showToast('😵 Jatuh! Kembali ke checkpoint');
       }

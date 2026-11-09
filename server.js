@@ -29,17 +29,68 @@ const NEXT_ROUND_DELAY_MS = 4000; // jeda antar-round eliminasi (otomatis, 4 det
 const MAPS = {
   map1: { name: 'Map 1 Klasik' },
   map2: { name: 'Map 2 Badai' },
+  map3: { name: 'Map 3 Angkasa' },
 };
+// Urutan map di mode Eliminasi: round 1 = map pilihan host, lalu lanjut
+// ke map berikutnya dalam urutan ini, berulang (Map 1 -> 2 -> 3 -> 1 ...).
+const MAP_ORDER = ['map1', 'map2', 'map3'];
 
 // Segmen tanah per map (server-side, SINKRON dengan MAPS di public/js/game.js).
 // Dipakai bot untuk tahu di mana jurang berada. Checkpoint = respawn bot.
 const MAP_GROUND = {
   map1: [[0, 900], [1020, 1820], [1940, 2620], [2740, 3440], [3560, 4280], [4400, 4800]],
   map2: [[0, 700], [860, 1500], [1660, 2300], [2460, 3100], [3260, 3900], [4060, 4800]],
+  map3: [[0, 650], [800, 1400], [1550, 2200], [2350, 2950], [3100, 3750], [3900, 4800]],
 };
-const MAP_CHECKPOINT = { map1: 2400, map2: 2250 };
-// Zona rintangan (x palu / pintu) per map — bot kadang "jatuh" di sini (5%).
-const MAP_HAZARDS = { map1: [1500, 2950], map2: [1200, 2900, 3400] };
+const MAP_CHECKPOINT = { map1: 2400, map2: 2250, map3: 2200 };
+// Zona rintangan (x palu / pintu / laser) per map — bot kadang "jatuh" di sini (5%).
+const MAP_HAZARDS = { map1: [1500, 2950], map2: [1200, 2900, 3400], map3: [1100, 2600, 3400] };
+
+// ---------- Power-up (v0.3.0) ----------
+// Jenis: speed (⚡ boost 3 dtk), double (🦘 lompat ganda 5 dtk),
+// shield (🛡️ tahan 1x serangan). Posisi per map SINKRON dengan client
+// (POWERUP_SPOTS di game.js hanya untuk referensi — server yang broadcast
+// posisi + jenis lewat event 'powerups', jadi client tidak perlu tahu).
+const POWERUP_TYPES = ['speed', 'double', 'shield'];
+const POWERUP_ICON = { speed: '⚡', double: '🦘', shield: '🛡️' };
+const POWERUP_SPOTS = {
+  map1: [{ x: 1200, y: 560 }, { x: 2400, y: 560 }, { x: 3600, y: 560 }],
+  map2: [{ x: 1200, y: 560 }, { x: 2250, y: 560 }, { x: 3600, y: 560 }],
+  map3: [{ x: 950, y: 560 }, { x: 2000, y: 560 }, { x: 3200, y: 560 }],
+};
+const POWERUP_RESPAWN_MS = 10000; // item yang diambil respawn (jenis diacak) setelah 10 dtk
+const POWERUP_PICKUP_DIST = 140; // toleransi jarak pemain-item (px) saat validasi pickup
+function randomPowerupType() { return POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)]; }
+function initPowerups(room) {
+  clearPowerupTimers(room);
+  room.powerups = (POWERUP_SPOTS[room.map] || POWERUP_SPOTS.map1).map((s, i) => ({
+    slot: i, x: s.x, y: s.y, type: randomPowerupType(), active: true,
+  }));
+}
+function publicPowerups(room) {
+  return (room.powerups || []).map((p) => ({
+    slot: p.slot, x: p.x, y: p.y, type: p.type, icon: POWERUP_ICON[p.type], active: p.active,
+  }));
+}
+function broadcastPowerups(room) {
+  io.to(room.code).emit('powerups', { powerups: publicPowerups(room) });
+}
+function clearPowerupTimers(room) {
+  if (room.powerupTimers) { room.powerupTimers.forEach(clearTimeout); room.powerupTimers = []; }
+}
+
+// ---------- Chat + taunt (v0.3.0) ----------
+// Riwayat chat hanya di memori per room (tanpa database): maks 30 pesan
+// terakhir, hilang saat room kosong/dihapus. Rate-limit 1 pesan/detik dan
+// 1 taunt/detik per pemain supaya tidak spam.
+const CHAT_MAX_LEN = 140;
+const CHAT_RATE_MS = 1000;
+const CHAT_HISTORY = 30;
+const TAUNTS = ['😂', '💨', '😭', '🔥', '👏', '😎', '🤣', '😮', '👍', '💀'];
+function pushChat(room, msg) {
+  room.chat.push(msg);
+  if (room.chat.length > CHAT_HISTORY) room.chat.splice(0, room.chat.length - CHAT_HISTORY);
+}
 const GROUND_Y_BOT = 616; // y bot saat berlari di tanah (tanah y=640, sprite 48px)
 const BOT_TICK_MS = 100; // tick bot ~10 Hz
 const BOT_FILL_TARGET = 6; // checkbox "isi bot" mengisi sampai total 6 pemain
@@ -86,11 +137,13 @@ function pickColor(room, wanted) {
 //            isBot?, botSpeed?, botRespawnX?, botJumpTargetX?, botFallAt?, botHazards? }
 const rooms = new Map();
 
-// Map round eliminasi: round ganjil = map pilihan host (baseMap),
-// round genap = map lainnya (bergantian Map 1 / Map 2).
+// Map round eliminasi (v0.3.0): round 1 = map pilihan host (baseMap),
+// lalu lanjut ke map berikutnya dalam MAP_ORDER, berulang
+// (misal host pilih Map 1 -> R1 Map 1, R2 Map 2, R3 Map 3, R4 Map 1, ...).
 function mapForRound(room) {
-  if (room.round % 2 === 1) return room.baseMap;
-  return room.baseMap === 'map1' ? 'map2' : 'map1';
+  const baseIdx = MAP_ORDER.indexOf(room.baseMap);
+  const start = baseIdx >= 0 ? baseIdx : 0;
+  return MAP_ORDER[(start + room.round - 1) % MAP_ORDER.length];
 }
 function activePlayers(room) {
   return [...room.players.values()].filter((p) => !p.eliminated);
@@ -279,6 +332,7 @@ function cleanupRoomIfEmpty(room) {
     if (room.syncTimer) clearInterval(room.syncTimer);
     stopBotTimer(room);
     clearRoundTimers(room);
+    clearPowerupTimers(room);
     rooms.delete(room.code);
   }
 }
@@ -288,6 +342,7 @@ function finishRace(room) {
   if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
   stopBotTimer(room);
   clearRoundTimers(room);
+  clearPowerupTimers(room);
   io.to(room.code).emit('raceFinished', {
     results: room.results,
     serverTime: Date.now(),
@@ -344,7 +399,9 @@ function endRound(room, reason) {
   }
   room.status = 'betweenRounds';
   const nextRound = room.round + 1;
-  const nextMap = nextRound % 2 === 1 ? room.baseMap : (room.baseMap === 'map1' ? 'map2' : 'map1');
+  // Map round berikutnya = map berikutnya dalam MAP_ORDER (1 -> 2 -> 3 -> 1 ...).
+  const baseIdx = MAP_ORDER.indexOf(room.baseMap);
+  const nextMap = MAP_ORDER[((baseIdx >= 0 ? baseIdx : 0) + nextRound - 1) % MAP_ORDER.length];
   io.to(room.code).emit('roundEnded', {
     round: room.round,
     reason,
@@ -392,6 +449,7 @@ function declareChampion(room, champion) {
   if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
   stopBotTimer(room);
   clearRoundTimers(room);
+  clearPowerupTimers(room);
   if (room.countdownTimer) { clearTimeout(room.countdownTimer); room.countdownTimer = null; }
   const results = eliminationRanking(room, champion);
   room.results = results;
@@ -433,6 +491,9 @@ function startRound(room) {
       serverTime: room.raceStart, map: room.map,
       mapName: MAPS[room.map].name, round: room.round, mode: room.mode,
     });
+    // Power-up (v0.3.0): spawn item di awal tiap round, broadcast ke semua.
+    initPowerups(room);
+    broadcastPowerups(room);
     room.syncTimer = setInterval(() => {
       if (room) io.to(room.code).emit('timeSync', { serverTime: Date.now() });
     }, 1000);
@@ -462,12 +523,13 @@ io.on('connection', (socket) => {
   socket.on('createRoom', ({ name, map, color, shape }) => {
     const cleanName = String(name || 'Pemain').trim().slice(0, 16) || 'Pemain';
     const code = makeCode();
-    room = { code, status: 'lobby', players: new Map(), results: [], raceStart: null, countdownTimer: null, syncTimer: null, map: MAPS[map] ? map : 'map1', baseMap: MAPS[map] ? map : 'map1', mode: 'race', round: 1, roundTimer: null, nextRoundTimer: null, elimHistory: [], fillBots: false, botTimer: null, botSeq: 0, botTickCount: 0 };
+    room = { code, status: 'lobby', players: new Map(), results: [], raceStart: null, countdownTimer: null, syncTimer: null, map: MAPS[map] ? map : 'map1', baseMap: MAPS[map] ? map : 'map1', mode: 'race', round: 1, roundTimer: null, nextRoundTimer: null, elimHistory: [], fillBots: false, botTimer: null, botSeq: 0, botTickCount: 0, chat: [], powerups: [], powerupTimers: [] };
     rooms.set(code, room);
     player = { id: socket.id, name: cleanName, color: pickColor(room, color), shape: validShape(shape), x: 100, y: 500, vx: 0, vy: 0, finished: false, finishTime: null, isHost: true, eliminated: false, isBot: false };
     room.players.set(socket.id, player);
     socket.join(code);
     socket.emit('joinedRoom', { code, playerId: socket.id, colorHex: COLOR_HEX[player.color], color: player.color, shape: player.shape, isHost: true, serverTime: Date.now(), map: room.map, mapName: MAPS[room.map].name, mode: room.mode, round: room.round });
+    socket.emit('chatHistory', { messages: room.chat });
     broadcastRoom(room);
   });
 
@@ -484,6 +546,7 @@ io.on('connection', (socket) => {
     room.players.set(socket.id, player);
     socket.join(room.code);
     socket.emit('joinedRoom', { code: room.code, playerId: socket.id, colorHex: COLOR_HEX[player.color], color: player.color, shape: player.shape, isHost: false, serverTime: Date.now(), map: room.map, mapName: MAPS[room.map].name, mode: room.mode, round: room.round });
+    socket.emit('chatHistory', { messages: room.chat || [] });
     broadcastRoom(room);
   });
 
@@ -556,6 +619,70 @@ io.on('connection', (socket) => {
     recordFinish(room, player);
   });
 
+  // ---------- Power-up: klaim item (v0.3.0) ----------
+  // Server otoritatif: item harus aktif DAN posisi terakhir pemain (dari
+  // 'move' terakhir) harus dalam 140 px dari item. Klaim kedua untuk item
+  // yang sama (sudah tidak aktif) ditolak diam-diam. Item respawn (jenis
+  // diacak) 10 detik setelah diambil.
+  socket.on('powerupPickup', (data) => {
+    if (!room || !player || room.status !== 'racing') return;
+    if (player.finished || player.eliminated || player.isBot) return;
+    const pu = (room.powerups || []).find((p) => p.slot === Number(data && data.slot));
+    if (!pu || !pu.active) return;
+    const dist = Math.hypot(player.x - pu.x, player.y - pu.y);
+    if (dist > POWERUP_PICKUP_DIST) return;
+    pu.active = false;
+    io.to(room.code).emit('powerupTaken', {
+      slot: pu.slot, playerId: player.id, name: player.name,
+      type: pu.type, icon: POWERUP_ICON[pu.type],
+    });
+    broadcastPowerups(room);
+    const t = setTimeout(() => {
+      if (!rooms.has(room.code) || !room.powerups) return;
+      const p2 = room.powerups.find((p) => p.slot === pu.slot);
+      if (!p2 || p2.active) return;
+      p2.type = randomPowerupType();
+      p2.active = true;
+      broadcastPowerups(room);
+    }, POWERUP_RESPAWN_MS);
+    room.powerupTimers = room.powerupTimers || [];
+    room.powerupTimers.push(t);
+  });
+
+  // ---------- Chat room + taunt (v0.3.0) ----------
+  // Chat hanya di-broadcast ke room yang sama (bukan room lain), maks 140
+  // karakter, rate-limit 1 pesan/detik per pemain (kelebihan dibuang diam-diam).
+  // Penonton (finish/gugur) tetap boleh chat & taunt.
+  socket.on('chatMessage', (data) => {
+    if (!room || !player) return;
+    const now = Date.now();
+    if (player.lastChatAt && now - player.lastChatAt < CHAT_RATE_MS) return;
+    const clean = String((data && data.text) || '').trim().slice(0, CHAT_MAX_LEN);
+    if (!clean) return;
+    player.lastChatAt = now;
+    const msg = { id: player.id, name: player.name, colorHex: COLOR_HEX[player.color], text: clean, ts: now };
+    pushChat(room, msg);
+    io.to(room.code).emit('chatMessage', msg);
+  });
+
+  // Taunt cepat: emoji harus dari daftar yang diizinkan, rate-limit
+  // 1 taunt/detik. Taunt di-broadcast 2 jalur: event 'taunt' (bubble emoji
+  // di atas kepala karakter di Phaser) + pesan chat biasa ("Budi: 😂").
+  socket.on('taunt', (data) => {
+    if (!room || !player) return;
+    const emoji = data && data.emoji;
+    if (!TAUNTS.includes(emoji)) return;
+    const now = Date.now();
+    if (player.lastTauntAt && now - player.lastTauntAt < CHAT_RATE_MS) return;
+    player.lastTauntAt = now;
+    io.to(room.code).emit('taunt', {
+      playerId: player.id, name: player.name, colorHex: COLOR_HEX[player.color], emoji,
+    });
+    const msg = { id: player.id, name: player.name, colorHex: COLOR_HEX[player.color], text: emoji, ts: now };
+    pushChat(room, msg);
+    io.to(room.code).emit('chatMessage', msg);
+  });
+
   // Pemain kembali ke lobby untuk balapan ulang.
   // Reset: mode kembali ke 'race' (default), round ke 1, semua pemain
   // tidak lagi gugur, map kembali ke pilihan host (baseMap).
@@ -565,6 +692,7 @@ io.on('connection', (socket) => {
     if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
     stopBotTimer(room);
     clearRoundTimers(room);
+    clearPowerupTimers(room);
     removeAllBots(room); // kembali ke lobby = hapus SEMUA bot
     room.status = 'lobby';
     room.results = [];
@@ -595,6 +723,7 @@ io.on('connection', (socket) => {
       if (room.syncTimer) clearInterval(room.syncTimer);
       stopBotTimer(room);
       clearRoundTimers(room);
+      clearPowerupTimers(room);
       rooms.delete(room.code);
       room = null;
       player = null;
