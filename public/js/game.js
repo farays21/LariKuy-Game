@@ -6,7 +6,9 @@
 (function () {
   'use strict';
 
-  // ---------- Konstanta dunia (harus cocok dengan server.js) ----------
+  // ---------- Konstanta dunia (fallback default = Map 1-3) ----------
+  // v0.4.0: lebar & finish per map ada di MAPS (def.width / def.finishX);
+  // konstanta di sini hanya fallback untuk kode yang belum tahu map aktif.
   const WORLD_WIDTH = 4800;
   const WORLD_HEIGHT = 720;
   const GROUND_Y = 640;
@@ -21,7 +23,12 @@
   // (lihat MAPS di server.js). Semua rintangan bergerak dihitung dari
   // serverTime, jadi identik di semua client.
   // ground: segmen tanah [x1,x2] (jurang = celah antar segmen)
-  // checkpointX: checkpoint respawn; platforms: pijakan melayang [x,y]
+  // width/finishX: lebar dunia & garis finish map ini (v0.4.0 — dulu hardcode
+  // 4800/4620 di mana-mana; sekarang semua logika pakai def.width/def.finishX)
+  // checkpoints: daftar checkpoint respawn (v0.4.0, array — Map 4 punya 2);
+  // checkpointX = checkpoints[0], dipertahankan sebagai alias supaya kode
+  // lama yang membacanya tidak rusak.
+  // platforms: pijakan melayang [x,y]
   // hammers: {x,len,speed,phase} — palu putar
   // movers: {x,y,axis,amp,period,phase} — platform bergerak (sinus dari serverTime)
   // bumpers: [x,y]; ice: segmen es [x1,x2] (harus di dalam segmen tanah)
@@ -31,7 +38,9 @@
   const MAPS = {
     map1: {
       id: 'map1', name: 'Map 1 Klasik',
+      width: 4800, finishX: 4620,
       ground: [[0, 900], [1020, 1820], [1940, 2620], [2740, 3440], [3560, 4280], [4400, 4800]],
+      checkpoints: [2400],
       checkpointX: 2400,
       platforms: [[1250, 480], [2150, 460], [3150, 480], [4050, 460]],
       hammers: [
@@ -50,8 +59,10 @@
     },
     map2: {
       id: 'map2', name: 'Map 2 Badai',
+      width: 4800, finishX: 4620,
       // Jurang di posisi berbeda dari Map 1; finish tetap x=4620.
       ground: [[0, 700], [860, 1500], [1660, 2300], [2460, 3100], [3260, 3900], [4060, 4800]],
+      checkpoints: [2250],
       checkpointX: 2250,
       platforms: [[1000, 480], [1900, 460], [2700, 480], [3600, 470]],
       hammers: [
@@ -74,9 +85,11 @@
     },
     map3: {
       id: 'map3', name: 'Map 3 Angkasa',
+      width: 4800, finishX: 4620,
       // Jurang di posisi berbeda dari Map 1 & 2; finish tetap x=4620.
       // Gravitasi ringan ditangani di buildWorld (750, bukan 1200).
       ground: [[0, 650], [800, 1400], [1550, 2200], [2350, 2950], [3100, 3750], [3900, 4800]],
+      checkpoints: [1650],
       // v0.3.1: checkpoint 1650 (dulu 2200, tepat di ujung segmen tanah
       // [1550,2200] — bot respawn di tepi jurang, tidak memicu lompat, jatuh,
       // respawn lagi, loop/stuck). 1650 ada di tengah segmen [1550,2200] dan
@@ -108,7 +121,51 @@
         { x: 3400, topY: 380, period: 3000, onMs: 1500 },
       ],
     },
+    map4: {
+      id: 'map4', name: 'Map 4 Maraton',
+      // v0.4.0: map terpanjang — lebar 7200, finish x=7020, gravitasi normal.
+      // 8 segmen tanah, celah jurang 160 px semua (sudah terbukti bisa
+      // dilompati di Map 2). Checkpoint GANDA, keduanya di TENGAH segmen
+      // tanah (2250 di tengah [1860,2600]; 4900 di tengah [4560,5300]),
+      // jauh dari hazard — JANGAN pindah ke ujung segmen (pelajaran v0.3.1).
+      width: 7200, finishX: 7020,
+      ground: [[0, 800], [960, 1700], [1860, 2600], [2760, 3500], [3660, 4400], [4560, 5300], [5460, 6200], [6360, 7200]],
+      checkpoints: [2250, 4900],
+      checkpointX: 2250,
+      // Platform melayang ekstra (jalan pintas / tempat aman).
+      platforms: [[1100, 480], [2100, 460], [3000, 480], [4000, 470], [4800, 460], [5700, 480], [6100, 460], [6800, 470]],
+      // Rintangan campuran (deterministik dari serverTime, seperti map lama):
+      // 2 palu putar, di tengah segmen tanah [960,1700] & [5460,6200].
+      hammers: [
+        { x: 1500, len: 140, speed: 1000, phase: 0 },
+        { x: 5800, len: 150, speed: 1100, phase: Math.PI },
+      ],
+      movers: [
+        { x: 880, y: 540, axis: 'x', amp: 70, period: 1200, phase: 0 },
+        { x: 5300, y: 540, axis: 'y', amp: 60, period: 1400, phase: Math.PI / 2 },
+      ],
+      bumpers: [[2500, 600], [4700, 600], [6500, 600]],
+      // Lantai es di dalam segmen tanah [3660,4400].
+      ice: [[3800, 4400]],
+      // TIDAK ada bola (supaya tidak menumpuk dengan rintangan lain).
+      ball: null,
+      // Pintu buka-tutup di x=3300 (di dalam segmen [2760,3500]),
+      // siklus 4 dtk seperti Map 2 (2 dtk tutup, 2 dtk buka).
+      doors: [{ x: 3300, width: 36, height: 140, period: 4000, closedMs: 2000 }],
+      // Kipas angin zona x 6400-6700 (di dalam segmen [6360,7200]).
+      fan: { x1: 6400, x2: 6700, topY: 380, pushX: 160, lift: 24 },
+      // 1 laser di x=5100 (di dalam segmen [4560,5300]),
+      // siklus 3 dtk (1,5 nyala / 1,5 mati) seperti Map 3.
+      lasers: [
+        { x: 5100, topY: 380, period: 3000, onMs: 1500 },
+      ],
+    },
   };
+
+  // Lebar & finish map yang sedang aktif (v0.4.0) — dipakai progress bar,
+  // finish, dan event playerFinished supaya tidak hardcode 4800/4620 lagi.
+  function currentMapDef() { return MAPS[currentMapId] || MAPS.map1; }
+  function currentFinishX() { return (currentMapDef().finishX || FINISH_X); }
 
   // Helper DOM — HARUS didefinisikan paling atas: v0.1.4 sempat memanggil $()
   // di bagian progress bar SEBELUM $ didefinisikan, sehingga script mati
@@ -235,7 +292,9 @@
   const progressEls = {}; // id -> dot element
   let lastProgressAt = 0;
   function progressPct(x) {
-    return Math.max(0, Math.min(100, (((Number(x) || START_X) - START_X) / (FINISH_X - START_X)) * 100));
+    // v0.4.0: pakai finishX map aktif (Map 4 = 7020), bukan hardcode 4620.
+    const fx = currentFinishX();
+    return Math.max(0, Math.min(100, (((Number(x) || START_X) - START_X) / (fx - START_X)) * 100));
   }
   function updateProgressDot(id, data) {
     if (!progressDotsEl) return;
@@ -304,7 +363,7 @@
   const lobbyErrorEl = $('lobbyError'), roomInfoEl = $('roomInfo');
   const playerListEl = $('playerList'), resultsEl = $('results'), resultsListEl = $('resultsList');
   const countdownEl = $('countdown'), toastEl = $('toast');
-  const mapPickerEl = $('mapPicker'), btnMap1El = $('btnMap1'), btnMap2El = $('btnMap2'), btnMap3El = $('btnMap3');
+  const mapPickerEl = $('mapPicker'), btnMap1El = $('btnMap1'), btnMap2El = $('btnMap2'), btnMap3El = $('btnMap3'), btnMap4El = $('btnMap4');
   const modePickerEl = $('modePicker'), btnModeRaceEl = $('btnModeRace'), btnModeElimEl = $('btnModeElim');
   const botPickerEl = $('botPicker'), chkFillBotsEl = $('chkFillBots');
   const modeLineEl = $('modeLine'), hudModeEl = $('hudMode');
@@ -324,12 +383,46 @@
     if (btnMap1El) btnMap1El.classList.toggle('selected', mapId === 'map1');
     if (btnMap2El) btnMap2El.classList.toggle('selected', mapId === 'map2');
     if (btnMap3El) btnMap3El.classList.toggle('selected', mapId === 'map3');
+    if (btnMap4El) btnMap4El.classList.toggle('selected', mapId === 'map4');
   }
   // Penanda checkpoint di progress bar ikut checkpoint map yang dipilih.
+  // v0.4.0: jumlah penanda = jumlah checkpoint map aktif — Map 4 = 2 penanda
+  // di posisi % yang benar (pakai finishX map aktif), Map 1-3 = 1 penanda
+  // seperti sekarang. Marker pertama tetap #progressCheckpoint (dari HTML);
+  // marker ke-2 dst. dibuat via document.createElement dengan class
+  // progress-marker, dan dihapus lagi kalau map berganti ke yang checkpoint-nya
+  // lebih sedikit.
   function updateCheckpointMarker(mapId) {
     const def = MAPS[mapId] || MAPS.map1;
-    const el = $('progressCheckpoint');
-    if (el) el.style.left = (((def.checkpointX - START_X) / (FINISH_X - START_X)) * 100).toFixed(1) + '%';
+    const fx = def.finishX || FINISH_X;
+    const cps = def.checkpoints || [def.checkpointX];
+    const track = $('progressCheckpoint') && $('progressCheckpoint').parentNode;
+    cps.forEach((cp, i) => {
+      const left = (((cp - START_X) / (fx - START_X)) * 100).toFixed(1) + '%';
+      if (i === 0) {
+        const el = $('progressCheckpoint');
+        if (el) el.style.left = left;
+      } else {
+        const id = 'progressCheckpoint' + (i + 1);
+        let el = $(id);
+        if (!el && track) {
+          el = document.createElement('span');
+          el.id = id;
+          el.className = 'progress-marker';
+          el.title = 'Checkpoint';
+          el.textContent = '✅';
+          track.appendChild(el);
+        }
+        if (el) el.style.left = left;
+      }
+    });
+    // Hapus marker ekstra kalau map baru checkpoint-nya lebih sedikit.
+    let i = cps.length + 1;
+    for (;; i++) {
+      const el = $('progressCheckpoint' + i);
+      if (!el) break;
+      el.remove();
+    }
   }
   // Terapkan map dari server: simpan, update UI, rebuild backdrop kalau berubah.
   function applyMap(mapId, status) {
@@ -771,7 +864,7 @@
     // targetnya sudah tidak aktif, tanpa menunggu roomUpdate berikutnya.
     const lp = lastPlayers.find((p) => p.id === d.id);
     if (lp) lp.finished = true;
-    updateProgressDot(d.id, { x: FINISH_X, finished: true, place: d.place });
+    updateProgressDot(d.id, { x: currentFinishX(), finished: true, place: d.place });
     showToast('🏁 ' + d.name + ' finish ke-' + d.place + ' (' + fmtTime(d.timeMs) + ')');
     // Saya baru finish (race) = masuk mode penonton; target tontonan yang
     // baru finish = pindah ke pemain aktif berikutnya.
@@ -781,7 +874,7 @@
   socket.on('raceFinished', (d) => {
     roomStatus = 'finished';
     setChatOpen(true); // balapan selesai: chat dibuka lagi
-    (d.results || []).forEach((r) => updateProgressDot(r.id, { x: FINISH_X, finished: true, place: r.place }));
+    (d.results || []).forEach((r) => updateProgressDot(r.id, { x: currentFinishX(), finished: true, place: r.place }));
     if (resultsTitleEl) resultsTitleEl.textContent = '🏆 Hasil Balapan';
     resultsEl.hidden = false;
     resultsListEl.innerHTML = d.results.map((r) =>
@@ -987,6 +1080,10 @@
     SFX.unlock(); SFX.click();
     if (isHost) socket.emit('setMap', { map: 'map3' });
   });
+  if (btnMap4El) btnMap4El.addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
+    if (isHost) socket.emit('setMap', { map: 'map4' });
+  });
   // Kontrol bot: checkbox dikirim ke server, server yang menambah/menghapus bot.
   if (chkFillBotsEl) chkFillBotsEl.addEventListener('change', () => {
     SFX.unlock(); SFX.click();
@@ -1108,7 +1205,8 @@
       this.hammerHitAt = 0;
       this.ballHitAt = 0;
       this.lastJumpSfxAt = 0;
-      this.checkpointReached = false;
+      this.checkpointReached = false; // true kalau sudah lewati ≥1 checkpoint (alias lama)
+      this.checkpointIdx = -1; // v0.4.0: indeks checkpoint TERAKHIR yang dicapai (-1 = belum ada)
       this.remoteSprites = {}; // id -> {sprite, label}
       this.tauntTexts = {}; // id -> teks emoji melayang (v0.3.0)
       this.powerupObjs = {}; // slot -> {bg, label} item power-up (v0.3.0)
@@ -1213,12 +1311,14 @@
       // --- Dunia sesuai map room saat ini (default Map 1) ---
       this.buildWorld(currentMapId);
 
-      this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      // Batas kamera & dunia ikut lebar map aktif (v0.4.0: Map 4 = 7200).
+      // buildWorld juga mengaturnya tiap rebuild, ini untuk pertama kali.
+      this.cameras.main.setBounds(0, 0, this.mapDef.width || WORLD_WIDTH, WORLD_HEIGHT);
       // BUG FIX v0.1.3: batas bawah world HARUS terbuka (checkCollisionDown=false).
       // Sebelumnya world bounds bawah menahan pemain di y max ~696, padahal
       // respawn dipicu di y > 780 — jadi pemain jatuh ke jurang malah mendarat
       // di lantai tak terlihat di dasar jurang dan tidak pernah respawn.
-      this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT, true, true, true, false);
+      this.physics.world.setBounds(0, 0, this.mapDef.width || WORLD_WIDTH, WORLD_HEIGHT, true, true, true, false);
       this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
       this.cameras.main.setZoom(1);
 
@@ -1256,6 +1356,23 @@
       // Gravitasi per map (v0.3.0 Map 3 "Angkasa"): 750 = lebih ringan,
       // lompat lebih tinggi & melayang lebih lama; map lain tetap 1200.
       this.physics.world.gravity.y = mapId === 'map3' ? 750 : 1200;
+      // Batas kamera & dunia ikut lebar map aktif (v0.4.0: Map 4 = 7200).
+      const worldW = def.width || WORLD_WIDTH;
+      this.cameras.main.setBounds(0, 0, worldW, WORLD_HEIGHT);
+      this.physics.world.setBounds(0, 0, worldW, WORLD_HEIGHT, true, true, true, false);
+      // Langit/awan/bukit di create() hanya selebar 4800 (WORLD_WIDTH) —
+      // untuk map yang lebih lebar (Map 4), tambah sambungannya di sini.
+      if (worldW > WORLD_WIDTH) {
+        add(this.add.rectangle(WORLD_WIDTH, 0, worldW - WORLD_WIDTH, WORLD_HEIGHT, 0x87ceeb).setOrigin(0).setDepth(-2));
+        for (let i = 0; i < 7; i++) {
+          const cx = WORLD_WIDTH + 120 + i * 340, cy = 60 + (i % 3) * 50;
+          add(this.add.ellipse(cx, cy, 120, 40, 0xffffff, 0.9));
+          add(this.add.ellipse(cx + 40, cy + 10, 90, 32, 0xffffff, 0.9));
+        }
+        for (let i = 0; i < 5; i++) {
+          add(this.add.ellipse(WORLD_WIDTH + 200 + i * 480, GROUND_Y + 4, 320, 90, 0x7ec850, 0.8));
+        }
+      }
       // Item power-up round lama disembunyikan sampai server kirim state baru.
       Object.values(this.powerupObjs || {}).forEach((o) => {
         if (o.bg) o.bg.setVisible(false);
@@ -1265,7 +1382,7 @@
       // --- Bintang (Map 3 Angkasa): titik-titik putih di langit ---
       if (mapId === 'map3') {
         for (let i = 0; i < 40; i++) {
-          const sx = (i * 373 + 60) % WORLD_WIDTH;
+          const sx = (i * 373 + 60) % (def.width || WORLD_WIDTH);
           const sy = 30 + ((i * 97) % 300);
           add(this.add.circle(sx, sy, (i % 3) + 1, 0xffffff, 0.9)).setDepth(-1);
         }
@@ -1361,13 +1478,18 @@
         this.laserObjs.push({ beam, x: d.x, topY: d.topY, def: d, _on: true });
       });
 
-      // --- Checkpoint & finish ---
-      add(this.add.rectangle(def.checkpointX, GROUND_Y - 40, 8, 90, 0x2ed573));
-      add(this.add.triangle(def.checkpointX, GROUND_Y - 110, 0, 0, 0, 30, 34, 15, 0x2ed573));
-      add(this.add.text(def.checkpointX - 52, GROUND_Y - 150, '✅ CHECKPOINT', { fontSize: '16px', color: '#14532d', fontStyle: 'bold' }));
-      add(this.add.rectangle(FINISH_X, GROUND_Y - 40, 8, 90, 0xff4757));
-      add(this.add.triangle(FINISH_X, GROUND_Y - 110, 0, 0, 0, 30, 34, 15, 0xff4757));
-      add(this.add.text(FINISH_X - 90, GROUND_Y - 150, '🏁 FINISH', { fontSize: '20px', color: '#7f1d1d', fontStyle: 'bold' }));
+      // --- Checkpoint (v0.4.0: bisa lebih dari 1 — Map 4 punya 2) & finish ---
+      // Posisi finish pakai def.finishX (Map 4 = 7020), bukan hardcode 4620.
+      const finishX = def.finishX || FINISH_X;
+      const checkpoints = def.checkpoints || [def.checkpointX];
+      checkpoints.forEach((cpX) => {
+        add(this.add.rectangle(cpX, GROUND_Y - 40, 8, 90, 0x2ed573));
+        add(this.add.triangle(cpX, GROUND_Y - 110, 0, 0, 0, 30, 34, 15, 0x2ed573));
+        add(this.add.text(cpX - 52, GROUND_Y - 150, '✅ CHECKPOINT', { fontSize: '16px', color: '#14532d', fontStyle: 'bold' }));
+      });
+      add(this.add.rectangle(finishX, GROUND_Y - 40, 8, 90, 0xff4757));
+      add(this.add.triangle(finishX, GROUND_Y - 110, 0, 0, 0, 30, 34, 15, 0xff4757));
+      add(this.add.text(finishX - 90, GROUND_Y - 150, '🏁 FINISH', { fontSize: '20px', color: '#7f1d1d', fontStyle: 'bold' }));
       add(this.add.text(60, GROUND_Y - 150, '▶ START — lari ke kanan!', { fontSize: '18px', color: '#333', fontStyle: 'bold' }));
       add(this.add.text(60, GROUND_Y - 185, '🗺️ ' + def.name, { fontSize: '16px', color: '#333', fontStyle: 'bold' }));
 
@@ -1401,6 +1523,7 @@
       this.racing = true;
       finished = false; finishSent = false;
       this.checkpointReached = false;
+      this.checkpointIdx = -1; // belum lewati checkpoint mana pun di round ini
       checkpoint = { x: START_X, y: 500 };
       clearMyEffects(); // power-up round lama tidak terbawa
       if (this.player) this.player.setPosition(START_X, 500).setVelocity(0, 0);
@@ -1596,7 +1719,7 @@
       // Sama di semua client karena raceStartServerTime berasal dari server.
       if (this.ballImg && def.ball) {
         const raceT = raceStartServerTime ? Math.max(0, serverNow() - raceStartServerTime) : 0;
-        const span = WORLD_WIDTH + 800;
+        const span = (def.width || WORLD_WIDTH) + 800;
         const bx = ((raceT * def.ball.speed / 1000) % span) - 400;
         const by = GROUND_Y - def.ball.radius;
         this.ballImg.setPosition(bx, by);
@@ -1729,12 +1852,21 @@
       // HUD efek power-up (sisa detik) diperbarui maks ~5 Hz.
       if (time - this._lastPowHud > 200) { this._lastPowHud = time; updatePowerupHud(); }
 
-      // --- Checkpoint (pakai checkpointX map yang aktif) ---
-      if (this.racing && !this.checkpointReached && !amEliminated && p.x >= def.checkpointX) {
-        this.checkpointReached = true;
-        checkpoint = { x: def.checkpointX, y: 500 };
-        SFX.checkpoint();
-        showToast('✅ Checkpoint!');
+      // --- Checkpoint GANDA (v0.4.0): respawn pindah ke checkpoint TERAKHIR
+      // yang dilewati. Map 1-3 (1 checkpoint) berperilaku persis seperti dulu.
+      // `checkpoint` (dipakai dieToCheckpoint & respawn jatuh) selalu berisi
+      // start {x:100,y:500} sampai checkpoint pertama dilewati.
+      if (this.racing && !amEliminated) {
+        const cps = def.checkpoints || [def.checkpointX];
+        for (let i = 0; i < cps.length; i++) {
+          if (i > this.checkpointIdx && p.x >= cps[i]) {
+            this.checkpointIdx = i;
+            this.checkpointReached = true;
+            checkpoint = { x: cps[i], y: 500 };
+            SFX.checkpoint();
+            showToast('✅ Checkpoint!');
+          }
+        }
       }
 
       // --- Jatuh ke jurang = respawn di checkpoint ---
@@ -1749,8 +1881,8 @@
         showToast('😵 Jatuh! Kembali ke checkpoint');
       }
 
-      // --- Finish (server yang menentukan urutan) ---
-      if (this.racing && !finished && !finishSent && !amEliminated && p.x >= FINISH_X) {
+      // --- Finish (server yang menentukan urutan; finishX map aktif) ---
+      if (this.racing && !finished && !finishSent && !amEliminated && p.x >= (def.finishX || FINISH_X)) {
         finished = true; finishSent = true;
         p.setVelocity(0, 0);
         socket.emit('playerFinished', { x: p.x });

@@ -20,8 +20,11 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 8;
-const WORLD = { width: 4800, finishX: 4620 };
-const ROUND_TIMEOUT_MS = 75000; // timeout 1 round eliminasi (75 detik sejak raceStarted)
+const WORLD = { width: 4800, finishX: 4620 }; // fallback default (Map 1-3); per-map di MAP_WIDTH/MAP_FINISH
+const ROUND_TIMEOUT_MS = 75000; // timeout 1 round eliminasi (75 detik sejak raceStarted) — map selain Map 4
+const ROUND_TIMEOUT_MAP4_MS = 110000; // timeout 1 round eliminasi di Map 4 (110 detik — map lebih panjang)
+// Timeout round eliminasi sesuai map aktif saat race dimulai (v0.4.0).
+function roundTimeoutMs(mapId) { return mapId === 'map4' ? ROUND_TIMEOUT_MAP4_MS : ROUND_TIMEOUT_MS; }
 const NEXT_ROUND_DELAY_MS = 4000; // jeda antar-round eliminasi (otomatis, 4 detik)
 
 // Map yang tersedia (metadata server; layout lengkap ada di public/js/game.js).
@@ -30,10 +33,11 @@ const MAPS = {
   map1: { name: 'Map 1 Klasik' },
   map2: { name: 'Map 2 Badai' },
   map3: { name: 'Map 3 Angkasa' },
+  map4: { name: 'Map 4 Maraton' },
 };
 // Urutan map di mode Eliminasi: round 1 = map pilihan host, lalu lanjut
-// ke map berikutnya dalam urutan ini, berulang (Map 1 -> 2 -> 3 -> 1 ...).
-const MAP_ORDER = ['map1', 'map2', 'map3'];
+// ke map berikutnya dalam urutan ini, berulang (Map 1 -> 2 -> 3 -> 4 -> 1 ...).
+const MAP_ORDER = ['map1', 'map2', 'map3', 'map4'];
 
 // Segmen tanah per map (server-side, SINKRON dengan MAPS di public/js/game.js).
 // Dipakai bot untuk tahu di mana jurang berada. Checkpoint = respawn bot.
@@ -41,8 +45,18 @@ const MAP_GROUND = {
   map1: [[0, 900], [1020, 1820], [1940, 2620], [2740, 3440], [3560, 4280], [4400, 4800]],
   map2: [[0, 700], [860, 1500], [1660, 2300], [2460, 3100], [3260, 3900], [4060, 4800]],
   map3: [[0, 650], [800, 1400], [1550, 2200], [2350, 2950], [3100, 3750], [3900, 4800]],
+  map4: [[0, 800], [960, 1700], [1860, 2600], [2760, 3500], [3660, 4400], [4560, 5300], [5460, 6200], [6360, 7200]],
 };
-const MAP_CHECKPOINT = { map1: 2400, map2: 2250, map3: 1650 };
+// Checkpoint per map (v0.4.0: array — Map 4 punya 2 checkpoint; Map 1-3 tetap 1).
+// Checkpoint harus di TENGAH segmen tanah, jauh dari hazard (pelajaran v0.3.1:
+// checkpoint di ujung segmen bikin bot respawn di tepi jurang lalu loop jatuh).
+const MAP_CHECKPOINTS = { map1: [2400], map2: [2250], map3: [1650], map4: [2250, 4900] };
+// Alias lama (checkpoint pertama) — dipakai kode yang hanya butuh 1 checkpoint.
+const MAP_CHECKPOINT = Object.fromEntries(
+  Object.entries(MAP_CHECKPOINTS).map(([k, v]) => [k, v[0]]));
+// Lebar dunia & garis finish per map (v0.4.0; Map 1-3 sama seperti dulu).
+const MAP_WIDTH = { map1: 4800, map2: 4800, map3: 4800, map4: 7200 };
+const MAP_FINISH = { map1: 4620, map2: 4620, map3: 4620, map4: 7020 };
 // Zona rintangan per map — DIPISAH per jenis karena efek ke bot beda:
 //  - MAP_HAMMERS: palu; bot 30% MATI (respawn ke checkpoint) saat pertama
 //    kali melewati palu per round.
@@ -54,9 +68,9 @@ const MAP_CHECKPOINT = { map1: 2400, map2: 2250, map3: 1650 };
 //    5% bot "jatuh" ke checkpoint saat pertama kali dilewati per round.
 // Satu zona hanya di-roll SEKALI per round (botHazards): bot yang mati &
 // respawn melewati zona yang sama dengan aman — anti-loop.
-const MAP_HAMMERS = { map1: [1500, 2950], map2: [1200, 3400], map3: [1900] };
-const MAP_LASERS = { map3: [1100, 2600, 3400] };
-const MAP_DOORS = { map2: [2900] };
+const MAP_HAMMERS = { map1: [1500, 2950], map2: [1200, 3400], map3: [1900], map4: [1500, 5800] };
+const MAP_LASERS = { map3: [1100, 2600, 3400], map4: [5100] };
+const MAP_DOORS = { map2: [2900], map4: [3300] };
 const LASER_PERIOD_MS = 3000; // periode nyala-mati laser (sinkron dengan client)
 const LASER_ON_MS = 1500; // laser nyala 1,5 dtk pertama tiap periode
 
@@ -71,6 +85,8 @@ const POWERUP_SPOTS = {
   map1: [{ x: 1200, y: 560 }, { x: 2400, y: 560 }, { x: 3600, y: 560 }],
   map2: [{ x: 1200, y: 560 }, { x: 2250, y: 560 }, { x: 3600, y: 560 }],
   map3: [{ x: 950, y: 560 }, { x: 2000, y: 560 }, { x: 3200, y: 560 }],
+  // Map 4 (v0.4.0): 5 titik, semua di atas segmen tanah (bukan jurang).
+  map4: [{ x: 1200, y: 560 }, { x: 2400, y: 560 }, { x: 4200, y: 560 }, { x: 5000, y: 560 }, { x: 6600, y: 560 }],
 };
 const POWERUP_RESPAWN_MS = 10000; // item yang diambil respawn (jenis diacak) setelah 10 dtk
 const POWERUP_PICKUP_DIST = 140; // toleransi jarak pemain-item (px) saat validasi pickup
@@ -158,7 +174,7 @@ const rooms = new Map();
 
 // Map round eliminasi (v0.3.0): round 1 = map pilihan host (baseMap),
 // lalu lanjut ke map berikutnya dalam MAP_ORDER, berulang
-// (misal host pilih Map 1 -> R1 Map 1, R2 Map 2, R3 Map 3, R4 Map 1, ...).
+// (misal host pilih Map 1 -> R1 Map 1, R2 Map 2, R3 Map 3, R4 Map 4, R5 Map 1, ...).
 function mapForRound(room) {
   const baseIdx = MAP_ORDER.indexOf(room.baseMap);
   const start = baseIdx >= 0 ? baseIdx : 0;
@@ -272,7 +288,8 @@ function botRespawn(bot) {
 function tickBots(room) {
   if (!rooms.has(room.code) || room.status !== 'racing') { stopBotTimer(room); return; }
   const ground = MAP_GROUND[room.map] || MAP_GROUND.map1;
-  const checkpointX = MAP_CHECKPOINT[room.map] || MAP_CHECKPOINT.map1;
+  const checkpoints = MAP_CHECKPOINTS[room.map] || MAP_CHECKPOINTS.map1;
+  const finishX = MAP_FINISH[room.map] || WORLD.finishX;
   const hammers = MAP_HAMMERS[room.map] || MAP_HAMMERS.map1;
   const lasers = MAP_LASERS[room.map] || [];
   const doors = MAP_DOORS[room.map] || [];
@@ -280,8 +297,12 @@ function tickBots(room) {
   for (const bot of bots) {
     if (room.status !== 'racing') return; // balapan bisa berakhir di tengah tick
     const prevX = bot.x;
-    // Checkpoint: sekali melewati checkpoint map aktif, respawn pindah ke sana.
-    if (bot.x >= checkpointX) bot.botRespawnX = checkpointX;
+    // Checkpoint ganda (v0.4.0): sekali melewati checkpoint mana pun,
+    // respawn pindah ke checkpoint TERAKHIR yang dilewati (bukan selalu ke-1).
+    // Map 1-3 (1 checkpoint) berperilaku persis seperti sebelumnya.
+    for (const cp of checkpoints) {
+      if (bot.x >= cp) bot.botRespawnX = cp;
+    }
     // Tentukan segmen tanah tempat bot berdiri.
     const seg = ground.find(([a, b]) => bot.x >= a && bot.x <= b);
     const segIdx = seg ? ground.indexOf(seg) : -1;
@@ -366,8 +387,8 @@ function tickBots(room) {
       bot.botStuckSince = null;
     }
     // Finish bot = finish pemain biasa (otoritatif server).
-    if (bot.x >= WORLD.finishX) {
-      bot.x = WORLD.finishX;
+    if (bot.x >= finishX) {
+      bot.x = finishX;
       recordFinish(room, bot);
       continue;
     }
@@ -431,7 +452,8 @@ function finishRace(room) {
 // ---------- Mode Eliminasi (multi-round) ----------
 // Aturan (lihat README bagian Mode Eliminasi):
 // - Tiap round = 1 balapan penuh; round berakhir saat semua pemain aktif
-//   finish, atau timeout 75 detik sejak raceStarted.
+//   finish, atau timeout sejak raceStarted (75 detik; 110 detik di Map 4 —
+//   lihat roundTimeoutMs di atas).
 // - 2 pemain terlambat gugur per round (finishTime; yang belum finish saat
 //   timeout dianggap paling lambat, tiebreak progress x terakhir).
 //   Kalau pemain aktif tinggal <= 2 di awal round, hanya 1 yang gugur.
@@ -568,6 +590,12 @@ function startRound(room) {
     io.to(room.code).emit('raceStarted', {
       serverTime: room.raceStart, map: room.map,
       mapName: MAPS[room.map].name, round: room.round, mode: room.mode,
+      // v0.4.0 (non-breaking, info tambahan): lebar + finish map aktif dan
+      // timeout round eliminasi yang dipakai round ini (110000 di Map 4,
+      // 75000 di map lain) — client/test bisa memverifikasi tanpa menunggu timeout.
+      width: MAP_WIDTH[room.map] || WORLD.width,
+      finishX: MAP_FINISH[room.map] || WORLD.finishX,
+      roundTimeoutMs: room.mode === 'elimination' ? roundTimeoutMs(room.map) : null,
     });
     // Power-up (v0.3.0): spawn item di awal tiap round, broadcast ke semua.
     initPowerups(room);
@@ -577,9 +605,11 @@ function startRound(room) {
     }, 1000);
     startBotTimer(room); // bot mulai bergerak saat racing
     if (room.mode === 'elimination') {
+      // Timeout round sesuai map aktif saat race dimulai (v0.4.0):
+      // 110 detik di Map 4 (map lebih panjang), 75 detik di map lain.
       room.roundTimer = setTimeout(() => {
         if (room && room.status === 'racing') endRound(room, 'timeout');
-      }, ROUND_TIMEOUT_MS);
+      }, roundTimeoutMs(room.map));
     }
     broadcastRoom(room);
   }, counts.length * 800);
@@ -693,7 +723,7 @@ io.on('connection', (socket) => {
   // Client hanya boleh melapor kalau x-nya sudah melewati garis finish.
   socket.on('playerFinished', (data) => {
     if (!room || !player || room.status !== 'racing' || player.finished || player.eliminated) return;
-    if (Number(data.x) < WORLD.finishX - 60) return; // anti-curang sederhana
+    if (Number(data.x) < (MAP_FINISH[room.map] || WORLD.finishX) - 60) return; // anti-curang sederhana
     recordFinish(room, player);
   });
 
