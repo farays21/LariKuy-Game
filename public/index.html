@@ -45,6 +45,7 @@
         <li>Host bisa pilih map di panel room: <b>Map 2 "Badai"</b> punya bola raksasa dari belakang, lantai es licin 🧊, pintu buka-tutup 🚪, dan kipas angin 💨. <b>Map 3 "Angkasa"</b> gravitasinya ringan (lompat lebih tinggi), banyak platform melayang, dan laser nyala-mati ⚡. <b>Map 4 "Maraton"</b> adalah map terpanjang (7200 px, finish x=7020) dengan <b>2 checkpoint</b> — jatuh/mati = kembali ke checkpoint terakhir yang sudah dilewati — plus rintangan campuran: palu putar, lantai es, pintu buka-tutup, kipas angin, dan laser.</li>
         <li>Ambil <b>power-up</b> di tengah map: ⚡ Speed Boost, 🦘 Lompat Ganda, 🛡️ Perisai anti-serangan.</li>
         <li><b>Chat &amp; taunt:</b> kirim pesan ke room atau klik emoji 😂💨🔥 — taunt muncul di atas kepala karaktermu.</li>
+        <li><b>Kejar-kejaran 🏃 (mode Tag):</b> balapan 90 detik, 1 pengejar acak yang larinya lebih cepat — yang disentuh pengejar jadi pengejar baru. Yang paling sedikit jadi pengejar = menang 🏆. Jatuh ke jurang / kena palu / kena laser tetap respawn di checkpoint seperti biasa.</li>
         <li>Siapa duluan melewati garis finish, dia juaranya 🏆</li>
       </ul>
     </details>
@@ -59,6 +60,7 @@
       <span id="hudPlayers">👥 1/8</span>
       <span id="hudRoom">Room —</span>
       <span id="hudMode" hidden>🏁 Balapan Sekali</span>
+      <span id="hudTag" hidden>👹 Pengejar: —</span>
       <!-- Mode penonton (v0.2.0 Fitur 5): tampil hanya saat jadi penonton -->
       <span id="hudSpectate" hidden>👁️ Nonton: —</span>
       <button id="btnSpectateNext" class="btn small" type="button" title="Ganti pemain yang ditonton" hidden>⏭️ Ganti Tontonan</button>
@@ -98,8 +100,10 @@
         <div class="row map-row">
           <button id="btnModeRace" class="btn small map-btn selected" type="button">🏁 Balapan Sekali</button>
           <button id="btnModeElim" class="btn small map-btn" type="button">💀 Eliminasi</button>
+          <button id="btnModeTag" class="btn small map-btn" type="button">🏃 Kejar-kejaran</button>
         </div>
         <p class="hint">Eliminasi: 2 pemain terlambat gugur tiap round, sampai tersisa 1 juara. Min. 3 pemain.</p>
+        <p class="hint">Kejar-kejaran: 1 pengejar acak, yang disentuh jadi pengejar baru. Paling sedikit jadi pengejar = menang. Min. 3 pemain.</p>
       </div>
       <!-- Kontrol bot (v0.2.0 Fitur 3): hanya host, hanya saat lobby -->
       <div id="botPicker" hidden>

@@ -133,6 +133,20 @@ const BOT_FALL_PER_DOOR = 0.05; // 5% jatuh saat melewati pintu Map 2 (perilaku 
 const BOT_STUCK_MS = 3000; // bot tanpa progres >5 px selama ini = stuck -> respawn
 const BOT_STUCK_MIN_PROGRESS_PX = 5; // ambang progres x per cek anti-stuck
 
+// ---------- Mode Tag (v0.5.0) ----------
+// Satu pemain jadi "pengejar"; siapa pun yang disentuh pengejar jadi
+// pengejar baru. Pemenang = total waktu jadi pengejar PALING SEDIKIT saat
+// timer habis. Tidak ada garis finish di mode ini.
+// TAG_DURATION_MS bisa di-override lewat env TAG_TEST_DURATION_MS (HANYA
+// untuk test otomatis — produksi tetap 90000). Test menyalakan server
+// dengan TAG_TEST_DURATION_MS=15000 supaya tidak menunggu 90 detik penuh.
+const TAG_DURATION_MS = Number(process.env.TAG_TEST_DURATION_MS) || 90000;
+const TAG_DIST_X = 55; // sentuhan: |dx| < 55 px ...
+const TAG_DIST_Y = 100; // ... dan |dy| < 100 px
+const TAG_IMMUNITY_MS = 2000; // masa kebal setelah pergantian pengejar
+const TAG_TICK_MS = 100; // interval cek tag (~10 Hz, sama dengan tick bot)
+const TAG_CHASER_SPEED_MULT = 1.15; // bot pengejar 15% lebih cepat
+
 // Warna karakter, satu per pemain (dipakai juga client untuk sprite).
 const COLORS = [
   0xff4757, // merah
@@ -187,6 +201,12 @@ function clearRoundTimers(room) {
   if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
   if (room.nextRoundTimer) { clearTimeout(room.nextRoundTimer); room.nextRoundTimer = null; }
 }
+// Bersihkan semua timer Mode Tag (dipanggil di semua tempat
+// clearRoundTimers dipanggil + saat room dihapus).
+function clearTagTimers(room) {
+  if (room.tagTimer) { clearTimeout(room.tagTimer); room.tagTimer = null; }
+  if (room.tagTickTimer) { clearInterval(room.tagTickTimer); room.tagTickTimer = null; }
+}
 
 function makeCode() {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -216,6 +236,10 @@ function broadcastRoom(room) {
     mode: room.mode,
     round: room.round,
     fillBots: !!room.fillBots,
+    // Mode Tag (v0.5.0): id pengejar saat ini + akhir timer (null kalau
+    // bukan mode tag / belum mulai).
+    tagChaserId: room.mode === 'tag' ? (room.tagChaserId || null) : null,
+    tagEndsAt: room.mode === 'tag' ? (room.tagEndsAt || null) : null,
   });
 }
 
@@ -290,13 +314,42 @@ function tickBots(room) {
   const ground = MAP_GROUND[room.map] || MAP_GROUND.map1;
   const checkpoints = MAP_CHECKPOINTS[room.map] || MAP_CHECKPOINTS.map1;
   const finishX = MAP_FINISH[room.map] || WORLD.finishX;
+  const worldWidth = MAP_WIDTH[room.map] || WORLD.width;
   const hammers = MAP_HAMMERS[room.map] || MAP_HAMMERS.map1;
   const lasers = MAP_LASERS[room.map] || [];
   const doors = MAP_DOORS[room.map] || [];
+  const isTag = room.mode === 'tag';
+  const chaser = isTag ? room.players.get(room.tagChaserId) : null;
   const bots = [...room.players.values()].filter((p) => p.isBot && !p.finished && !p.eliminated);
   for (const bot of bots) {
     if (room.status !== 'racing') return; // balapan bisa berakhir di tengah tick
     const prevX = bot.x;
+    const isChaserBot = isTag && chaser && chaser.id === bot.id;
+    // Kecepatan (v0.5.0): bot pengejar 15% lebih cepat dari kecepatan dasarnya.
+    const speed = isChaserBot ? bot.botSpeed * TAG_CHASER_SPEED_MULT : bot.botSpeed;
+    // Arah gerak (v0.5.0): race/eliminasi selalu +1 (kanan) — perilaku lama.
+    // Mode Tag: pengejar bergerak KE ARAH x pelari aktif terdekat
+    // (manusia/bot, bukan dirinya); pelari bergerak MENJAUH dari pengejar.
+    let dir = 1;
+    if (isTag) {
+      if (isChaserBot) {
+        let nearest = null; let nearestDist = Infinity;
+        for (const p of activePlayers(room)) {
+          if (p.id === bot.id || p.finished) continue;
+          const d = Math.abs(p.x - bot.x);
+          if (d < nearestDist) { nearestDist = d; nearest = p; }
+        }
+        if (nearest) dir = nearest.x === bot.x ? 1 : Math.sign(nearest.x - bot.x);
+      } else if (chaser) {
+        dir = bot.x === chaser.x ? 1 : Math.sign(bot.x - chaser.x);
+        // Pelari yang mendekati ujung kiri HARUS berbalik ke kanan
+        // (jangan diam di pojok).
+        if (bot.x < 300) dir = 1;
+      }
+      // Bot di mode tag tidak pernah melewati garis finish: yang sudah
+      // sampai ujung kanan berbalik ke kiri (pengejar maupun pelari).
+      if (bot.x >= finishX) dir = -1;
+    }
     // Checkpoint ganda (v0.4.0): sekali melewati checkpoint mana pun,
     // respawn pindah ke checkpoint TERAKHIR yang dilewati (bukan selalu ke-1).
     // Map 1-3 (1 checkpoint) berperilaku persis seperti sebelumnya.
@@ -306,47 +359,63 @@ function tickBots(room) {
     // Tentukan segmen tanah tempat bot berdiri.
     const seg = ground.find(([a, b]) => bot.x >= a && bot.x <= b);
     const segIdx = seg ? ground.indexOf(seg) : -1;
-    // Lompat jurang: ujung tanah di depan sudah dekat (<120 px) dan masih
-    // ada segmen berikutnya -> lompat (y naik ke ~500) dan tetap di udara
-    // sampai mendarat di segmen berikutnya (target = awal segmen + 10 px,
-    // jadi lompatan selalu cukup jauh melewati jurang selebar apa pun);
-    // 8% lompatan gagal.
+    // Lompat jurang (digeneralisasi v0.5.0 ke DUA arah): jarak ke ujung
+    // segmen SEARAH gerak, target = awal segmen berikutnya searah gerak
+    // +10 px (ke kanan) atau akhir segmen sebelumnya -10 px (ke kiri).
+    // Di race/eliminasi dir selalu +1, jadi perilaku IDENTIK seperti dulu.
     // PERTAHANAN tepi jurang: bot yang berdiri TEPAT di ujung segmen
     // (distToEnd == 0 — mis. respawn di checkpoint lama Map 3 x=2200 yang
     // tepat di ujung segmen [1550,2200]) tidak memenuhi syarat
     // `distToEnd > 0` di atas; tanpa ini bot jalan lurus keluar segmen,
     // jatuh, respawn ke ujung yang sama, dan mengulang selamanya.
     // Di ujung segmen, langsung lompat ke segmen berikutnya (atau gagal 8%).
-    if (seg && segIdx < ground.length - 1 && !bot.botJumpTargetX && !bot.botFallAt) {
-      const distToEnd = seg[1] - bot.x;
-      if ((distToEnd < BOT_JUMP_AHEAD_PX && distToEnd > 0) || distToEnd <= 0) {
-        if (Math.random() < BOT_FALL_PER_GAP) bot.botFallAt = seg[1];
-        else bot.botJumpTargetX = ground[segIdx + 1][0] + 10;
+    if (seg && !bot.botJumpTargetX && !bot.botFallAt) {
+      const distToEnd = dir > 0 ? seg[1] - bot.x : bot.x - seg[0];
+      const hasNext = dir > 0 ? segIdx < ground.length - 1 : segIdx > 0;
+      if (hasNext && ((distToEnd < BOT_JUMP_AHEAD_PX && distToEnd > 0) || distToEnd <= 0)) {
+        if (Math.random() < BOT_FALL_PER_GAP) {
+          bot.botFallAt = dir > 0 ? seg[1] : seg[0];
+        } else {
+          bot.botJumpTargetX = dir > 0
+            ? ground[segIdx + 1][0] + 10
+            : ground[segIdx - 1][1] - 10;
+        }
       }
     }
-    bot.x += bot.botSpeed * (BOT_TICK_MS / 1000);
-    bot.vx = bot.botSpeed; bot.vy = 0;
-    if (bot.botJumpTargetX && bot.x >= bot.botJumpTargetX) bot.botJumpTargetX = null; // mendarat
+    bot.x += dir * speed * (BOT_TICK_MS / 1000);
+    bot.vx = dir * speed; bot.vy = 0;
+    if (bot.botJumpTargetX != null) {
+      const landed = dir > 0 ? bot.x >= bot.botJumpTargetX : bot.x <= bot.botJumpTargetX;
+      if (landed) bot.botJumpTargetX = null; // mendarat
+    }
     bot.y = bot.botJumpTargetX ? 500 : GROUND_Y_BOT;
     // Lompatan gagal: begitu mencapai ujung tanah, jatuh -> checkpoint.
     // fellThisTick = bot teleport karena jatuh (bukan jalan kaki), jadi
     // zona hazard TIDAK di-roll di tick ini.
     let fellThisTick = false;
-    if (bot.botFallAt && bot.x >= bot.botFallAt) { botRespawn(bot); fellThisTick = true; }
+    if (bot.botFallAt != null) {
+      const reached = dir > 0 ? bot.x >= bot.botFallAt : bot.x <= bot.botFallAt;
+      if (reached) { botRespawn(bot); fellThisTick = true; }
+    }
     // Bot di luar segmen tanah tanpa sedang melompat = jatuh ke jurang.
     else if (!bot.botJumpTargetX) {
       const onGround = ground.some(([a, b]) => bot.x >= a && bot.x <= b);
       if (!onGround && bot.x > 0) { botRespawn(bot); fellThisTick = true; }
     }
+    // Jaga bot tetap di dalam dunia (mode tag: bot bisa lari ke kiri).
+    if (bot.x < 0) bot.x = 0;
+    if (bot.x > worldWidth) bot.x = worldWidth;
     // Rintangan: tiap zona hanya di-roll SEKALI per round (botHazards,
     // kunci 'jenis:x') — bot yang mati & respawn melewati zona yang sama
     // dengan aman, jadi tidak bisa mati berulang di tempat yang sama.
     // Palu 30% mati; laser hanya saat NYALA, 50% mati; pintu Map 2 5%
     // jatuh (perilaku lama). Mati = botRespawn biasa ke checkpoint.
+    // Arah gerak diperhitungkan: gerak ke kiri = prevX > hz && x <= hz.
+    const crossed = (hz) => (dir > 0 ? (prevX < hz && bot.x >= hz) : (prevX > hz && bot.x <= hz));
     if (!fellThisTick) {
       let diedThisTick = false;
       for (const hz of hammers) {
-        if (prevX < hz && bot.x >= hz && !bot.botHazards.has('hammer:' + hz)) {
+        if (crossed(hz) && !bot.botHazards.has('hammer:' + hz)) {
           bot.botHazards.add('hammer:' + hz);
           if (Math.random() < BOT_FALL_PER_HAMMER) { botRespawn(bot); diedThisTick = true; break; }
         }
@@ -356,7 +425,7 @@ function tickBots(room) {
         // rumus sama dengan client); kalau mati, bot lewat aman.
         const laserOn = (Date.now() % LASER_PERIOD_MS) < LASER_ON_MS;
         for (const hz of lasers) {
-          if (prevX < hz && bot.x >= hz && !bot.botHazards.has('laser:' + hz)) {
+          if (crossed(hz) && !bot.botHazards.has('laser:' + hz)) {
             bot.botHazards.add('laser:' + hz);
             if (laserOn && Math.random() < BOT_FALL_PER_LASER) { botRespawn(bot); diedThisTick = true; break; }
           }
@@ -364,19 +433,22 @@ function tickBots(room) {
       }
       if (!diedThisTick) {
         for (const hz of doors) {
-          if (prevX < hz && bot.x >= hz && !bot.botHazards.has('door:' + hz)) {
+          if (crossed(hz) && !bot.botHazards.has('door:' + hz)) {
             bot.botHazards.add('door:' + hz);
             if (Math.random() < BOT_FALL_PER_DOOR) { botRespawn(bot); break; }
           }
         }
       }
     }
-    // PENGAMAN ANTI-STUCK (semua map): kalau x bot tidak bertambah >5 px
+    // PENGAMAN ANTI-STUCK (semua map): kalau x bot tidak berubah >5 px
     // selama 3000 ms padahal masih racing dan belum finish, paksa respawn
     // ke checkpoint — hanya mundur, TIDAK pernah teleport maju atau
     // finish instan. botRespawn() me-reset pelacak, jadi bot yang baru
     // jatuh/mati tidak langsung dianggap stuck.
-    if (bot.x > (bot.botLastProgressX ?? bot.x) + BOT_STUCK_MIN_PROGRESS_PX) {
+    // (v0.5.0: pakai |dx| supaya bot yang lari ke kiri di mode Tag tidak
+    // salah dianggap stuck; di race/eliminasi x hanya naik, jadi perilakunya
+    // sama persis seperti sebelumnya.)
+    if (Math.abs(bot.x - (bot.botLastProgressX ?? bot.x)) > BOT_STUCK_MIN_PROGRESS_PX) {
       bot.botLastProgressX = bot.x;
       bot.botStuckSince = null;
     } else if (bot.botStuckSince == null) {
@@ -387,7 +459,12 @@ function tickBots(room) {
       bot.botStuckSince = null;
     }
     // Finish bot = finish pemain biasa (otoritatif server).
-    if (bot.x >= finishX) {
+    // Mode Tag TIDAK PUNYA finish: bot yang mencapai finishX cukup
+    // berhenti di situ (tick berikut dir=-1, lihat atas) — tidak pernah
+    // memanggil recordFinish.
+    if (isTag) {
+      if (bot.x >= finishX) bot.x = finishX;
+    } else if (bot.x >= finishX) {
       bot.x = finishX;
       recordFinish(room, bot);
       continue;
@@ -403,10 +480,111 @@ function tickBots(room) {
   if (room.botTickCount % 10 === 0) broadcastRoom(room);
 }
 
+// ---------- Mode Tag (v0.5.0): tick + akhir ronde ----------
+// Cek sentuhan tiap 100 ms: kalau ada pelari aktif dalam |dx| < 55 dan
+// |dy| < 100 dari pengejar, pengejar berpindah ke pelari TERDEKAT itu.
+// Hanya 1 pergantian per tick. Masa kebal 2 detik setelah pergantian.
+function tickTag(room) {
+  if (!rooms.has(room.code) || room.status !== 'racing' || room.mode !== 'tag') return;
+  const now = Date.now();
+  if (now < (room.tagImmuneUntil || 0)) return; // masih masa kebal
+  const chaser = room.players.get(room.tagChaserId);
+  if (!chaser || chaser.eliminated || chaser.finished) {
+    // Pengejar hilang tanpa lewat handler disconnect (seharusnya tidak
+    // terjadi): pilih pengejar baru acak dari pemain aktif.
+    const actives = activePlayers(room).filter((p) => !p.finished);
+    if (actives.length === 0) return;
+    const prev = chaser || null;
+    const next = actives[Math.floor(Math.random() * actives.length)];
+    room.tagChaserId = next.id;
+    room.tagLastSwitchAt = now;
+    room.tagImmuneUntil = now + TAG_IMMUNITY_MS;
+    io.to(room.code).emit('tagChanged', {
+      chaserId: next.id, chaserName: next.name,
+      prevChaserId: prev ? prev.id : null,
+      prevChaserName: prev ? prev.name : null,
+      times: { ...room.tagTimes }, serverTime: now,
+    });
+    broadcastRoom(room);
+    return;
+  }
+  let nearest = null; let nearestDist = Infinity;
+  for (const p of activePlayers(room)) {
+    if (p.id === chaser.id || p.finished) continue;
+    const dx = Math.abs(p.x - chaser.x);
+    const dy = Math.abs(p.y - chaser.y);
+    if (dx < TAG_DIST_X && dy < TAG_DIST_Y) {
+      const d = Math.hypot(p.x - chaser.x, p.y - chaser.y);
+      if (d < nearestDist) { nearestDist = d; nearest = p; }
+    }
+  }
+  if (!nearest) return;
+  // (a) akumulasikan waktu pengejar lama, (b) pindah pengejar,
+  // (c) broadcast tagChanged dengan times terbaru.
+  room.tagTimes[chaser.id] = (room.tagTimes[chaser.id] || 0) + (now - room.tagLastSwitchAt);
+  const prevId = chaser.id; const prevName = chaser.name;
+  room.tagChaserId = nearest.id;
+  room.tagLastSwitchAt = now;
+  room.tagImmuneUntil = now + TAG_IMMUNITY_MS;
+  io.to(room.code).emit('tagChanged', {
+    chaserId: nearest.id, chaserName: nearest.name,
+    prevChaserId: prevId, prevChaserName: prevName,
+    times: { ...room.tagTimes }, serverTime: now,
+  });
+  broadcastRoom(room);
+}
+
+// Akhiri ronde Tag saat timer habis (atau saat pemain aktif tersisa <= 1
+// karena disconnect). Pemenang = waktu jadi pengejar PALING SEDIKIT di
+// antara pemain yang MASIH di room. Pemain yang sudah disconnect waktunya
+// tetap tercatat, tapi TIDAK bisa menang (left:true di results).
+function endTag(room) {
+  if (!room || room.status !== 'racing' || room.mode !== 'tag') return;
+  const now = Date.now();
+  // Tambahkan sisa waktu pengejar saat ini.
+  if (room.tagChaserId) {
+    room.tagTimes[room.tagChaserId] =
+      (room.tagTimes[room.tagChaserId] || 0) + (now - room.tagLastSwitchAt);
+  }
+  clearTagTimers(room);
+  if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
+  stopBotTimer(room);
+  clearRoundTimers(room);
+  clearPowerupTimers(room);
+  room.status = 'finished';
+  // Semua pemain yang pernah main di ronde ini: dari tagTimes + yang
+  // masih aktif. Info nama/warna pemain yang sudah keluar diambil dari
+  // tagInfo (snapshot saat ronde dimulai).
+  const ids = new Set([
+    ...Object.keys(room.tagTimes || {}),
+    ...activePlayers(room).map((p) => p.id),
+  ]);
+  const results = [...ids].map((id) => {
+    const live = room.players.get(id);
+    const info = room.tagInfo[id] || {};
+    return {
+      id,
+      name: live ? live.name : (info.name || '?'),
+      colorHex: live ? COLOR_HEX[live.color] : (info.colorHex || '#ffffff'),
+      chaserMs: room.tagTimes[id] || 0,
+      isBot: live ? !!live.isBot : !!info.isBot,
+      left: !live,
+    };
+  }).sort((a, b) => a.chaserMs - b.chaserMs);
+  results.forEach((r, i) => { r.place = i + 1; });
+  const winnerEntry = results.find((r) => !r.left);
+  const winner = winnerEntry ? { id: winnerEntry.id, name: winnerEntry.name } : null;
+  io.to(room.code).emit('tagFinished', { results, winner, serverTime: now });
+  broadcastRoom(room);
+  // Bot TIDAK dihapus otomatis (seperti race biasa — host bisa
+  // backToLobby; jangan tiru declareChampion yang menghapus bot).
+}
+
 // Mencatat finish satu pemain (manusia via event, bot via tick) + menutup
 // round/balapan kalau semua pemain aktif sudah finish.
 function recordFinish(room, p) {
   if (!room || room.status !== 'racing' || p.finished || p.eliminated) return;
+  if (room.mode === 'tag') return; // mode Tag tidak punya garis finish
   p.finished = true;
   p.finishTime = Date.now() - room.raceStart;
   room.results.push({
@@ -431,6 +609,7 @@ function cleanupRoomIfEmpty(room) {
     if (room.syncTimer) clearInterval(room.syncTimer);
     stopBotTimer(room);
     clearRoundTimers(room);
+    clearTagTimers(room);
     clearPowerupTimers(room);
     rooms.delete(room.code);
   }
@@ -441,6 +620,7 @@ function finishRace(room) {
   if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
   stopBotTimer(room);
   clearRoundTimers(room);
+  clearTagTimers(room);
   clearPowerupTimers(room);
   io.to(room.code).emit('raceFinished', {
     results: room.results,
@@ -464,6 +644,7 @@ function endRound(room, reason) {
   if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
   stopBotTimer(room);
   clearRoundTimers(room);
+  clearTagTimers(room);
   const active = activePlayers(room);
   if (active.length === 0) {
     // Tidak ada lagi pemain aktif (misal semua disconnect kecuali yang
@@ -549,6 +730,7 @@ function declareChampion(room, champion) {
   if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
   stopBotTimer(room);
   clearRoundTimers(room);
+  clearTagTimers(room);
   clearPowerupTimers(room);
   if (room.countdownTimer) { clearTimeout(room.countdownTimer); room.countdownTimer = null; }
   const results = eliminationRanking(room, champion);
@@ -587,6 +769,26 @@ function startRound(room) {
     if (!room || room.status !== 'countdown') return;
     room.status = 'racing';
     room.raceStart = Date.now();
+    // Mode Tag (v0.5.0): pilih 1 pengejar acak dari pemain aktif, mulai
+    // hitung waktu + timer akhir ronde. Map = baseMap (seperti race),
+    // dan JANGAN pasang roundTimer eliminasi.
+    let tagStart = null;
+    if (room.mode === 'tag') {
+      clearTagTimers(room);
+      const actives = activePlayers(room);
+      const first = actives[Math.floor(Math.random() * actives.length)];
+      room.tagChaserId = first ? first.id : null;
+      room.tagEndsAt = Date.now() + TAG_DURATION_MS;
+      room.tagTimes = {};
+      room.tagInfo = {};
+      for (const p of actives) {
+        room.tagTimes[p.id] = 0;
+        room.tagInfo[p.id] = { name: p.name, colorHex: COLOR_HEX[p.color], isBot: !!p.isBot };
+      }
+      room.tagLastSwitchAt = Date.now();
+      room.tagImmuneUntil = Date.now() + TAG_IMMUNITY_MS;
+      tagStart = { chaserId: room.tagChaserId, chaserName: first ? first.name : null };
+    }
     io.to(room.code).emit('raceStarted', {
       serverTime: room.raceStart, map: room.map,
       mapName: MAPS[room.map].name, round: room.round, mode: room.mode,
@@ -596,6 +798,13 @@ function startRound(room) {
       width: MAP_WIDTH[room.map] || WORLD.width,
       finishX: MAP_FINISH[room.map] || WORLD.finishX,
       roundTimeoutMs: room.mode === 'elimination' ? roundTimeoutMs(room.map) : null,
+      // v0.5.0 (mode tag saja): pengejar awal + akhir timer.
+      ...(room.mode === 'tag' ? {
+        tagEndsAt: room.tagEndsAt,
+        tagDurationMs: TAG_DURATION_MS,
+        chaserId: tagStart.chaserId,
+        chaserName: tagStart.chaserName,
+      } : {}),
     });
     // Power-up (v0.3.0): spawn item di awal tiap round, broadcast ke semua.
     initPowerups(room);
@@ -610,6 +819,12 @@ function startRound(room) {
       room.roundTimer = setTimeout(() => {
         if (room && room.status === 'racing') endRound(room, 'timeout');
       }, roundTimeoutMs(room.map));
+    }
+    if (room.mode === 'tag') {
+      room.tagTickTimer = setInterval(() => tickTag(room), TAG_TICK_MS);
+      room.tagTimer = setTimeout(() => {
+        if (room && room.status === 'racing') endTag(room);
+      }, TAG_DURATION_MS);
     }
     broadcastRoom(room);
   }, counts.length * 800);
@@ -631,7 +846,12 @@ io.on('connection', (socket) => {
   socket.on('createRoom', ({ name, map, color, shape }) => {
     const cleanName = String(name || 'Pemain').trim().slice(0, 16) || 'Pemain';
     const code = makeCode();
-    room = { code, status: 'lobby', players: new Map(), results: [], raceStart: null, countdownTimer: null, syncTimer: null, map: MAPS[map] ? map : 'map1', baseMap: MAPS[map] ? map : 'map1', mode: 'race', round: 1, roundTimer: null, nextRoundTimer: null, elimHistory: [], fillBots: false, botTimer: null, botSeq: 0, botTickCount: 0, chat: [], powerups: [], powerupTimers: [] };
+    room = { code, status: 'lobby', players: new Map(), results: [], raceStart: null, countdownTimer: null, syncTimer: null, map: MAPS[map] ? map : 'map1', baseMap: MAPS[map] ? map : 'map1', mode: 'race', round: 1, roundTimer: null, nextRoundTimer: null, elimHistory: [], fillBots: false, botTimer: null, botSeq: 0, botTickCount: 0, chat: [], powerups: [], powerupTimers: [],
+      // Mode Tag (v0.5.0): pengejar saat ini, akhir timer, akumulasi waktu
+      // jadi pengejar per pemain, snapshot info pemain (untuk results
+      // pemain yang sudah disconnect), timer-timer tag.
+      tagChaserId: null, tagEndsAt: null, tagTimes: {}, tagInfo: {},
+      tagImmuneUntil: 0, tagLastSwitchAt: 0, tagTimer: null, tagTickTimer: null };
     rooms.set(code, room);
     player = { id: socket.id, name: cleanName, color: pickColor(room, color), shape: validShape(shape), x: 100, y: 500, vx: 0, vy: 0, finished: false, finishTime: null, isHost: true, eliminated: false, isBot: false };
     room.players.set(socket.id, player);
@@ -674,7 +894,7 @@ io.on('connection', (socket) => {
   socket.on('setMode', ({ mode }) => {
     if (!room || !player || !player.isHost) return;
     if (room.status !== 'lobby') return;
-    if (mode !== 'race' && mode !== 'elimination') return;
+    if (mode !== 'race' && mode !== 'elimination' && mode !== 'tag') return;
     room.mode = mode;
     broadcastRoom(room);
   });
@@ -693,9 +913,12 @@ io.on('connection', (socket) => {
     if (!room || !player || !player.isHost) return;
     if (room.status !== 'lobby') return;
     if (room.players.size < 1) return;
-    // Mode eliminasi butuh minimal 3 pemain aktif.
+    // Mode eliminasi & tag butuh minimal 3 pemain aktif.
     if (room.mode === 'elimination' && room.players.size < 3) {
       return socket.emit('startError', { message: 'Mode Eliminasi butuh minimal 3 pemain! Ajak temanmu dulu 💀' });
+    }
+    if (room.mode === 'tag' && room.players.size < 3) {
+      return socket.emit('startError', { message: 'Mode Tag butuh minimal 3 pemain! Ajak temanmu dulu 🏷️' });
     }
     room.round = 1;
     room.elimHistory = [];
@@ -800,6 +1023,7 @@ io.on('connection', (socket) => {
     if (room.syncTimer) { clearInterval(room.syncTimer); room.syncTimer = null; }
     stopBotTimer(room);
     clearRoundTimers(room);
+    clearTagTimers(room);
     clearPowerupTimers(room);
     removeAllBots(room); // kembali ke lobby = hapus SEMUA bot
     room.status = 'lobby';
@@ -808,6 +1032,8 @@ io.on('connection', (socket) => {
     room.mode = 'race';
     room.round = 1;
     room.elimHistory = [];
+    room.tagChaserId = null; room.tagEndsAt = null; room.tagTimes = {}; room.tagInfo = {};
+    room.tagImmuneUntil = 0; room.tagLastSwitchAt = 0;
     room.map = room.baseMap;
     for (const p of room.players.values()) {
       p.x = 100; p.y = 500; p.finished = false; p.finishTime = null; p.eliminated = false;
@@ -822,6 +1048,17 @@ io.on('connection', (socket) => {
     const wasRacing = room.status === 'racing';
     const wasInElimGame = room.mode === 'elimination' &&
       ['countdown', 'racing', 'betweenRounds'].includes(room.status);
+    const wasTagGame = room.mode === 'tag' && wasRacing;
+    const wasTagChaser = wasTagGame && room.tagChaserId === socket.id;
+    // (a) Mode Tag: kalau yang keluar adalah pengejar, akumulasikan
+    // waktunya sampai detik ia keluar (ia tetap tercatat, tapi left:true
+    // dan tidak bisa menang). tagLastSwitchAt di-reset supaya endTag
+    // yang dipanggil sesudah ini tidak menghitung segmen itu 2x.
+    if (wasTagChaser) {
+      room.tagTimes[socket.id] =
+        (room.tagTimes[socket.id] || 0) + (Date.now() - room.tagLastSwitchAt);
+      room.tagLastSwitchAt = Date.now();
+    }
     room.players.delete(socket.id);
     socket.to(room.code).emit('playerLeft', { id: socket.id, name: player.name });
     // Kalau tidak ada lagi manusia, hapus room (bot tidak boleh menahan room).
@@ -831,6 +1068,7 @@ io.on('connection', (socket) => {
       if (room.syncTimer) clearInterval(room.syncTimer);
       stopBotTimer(room);
       clearRoundTimers(room);
+      clearTagTimers(room);
       clearPowerupTimers(room);
       rooms.delete(room.code);
       room = null;
@@ -842,7 +1080,28 @@ io.on('connection', (socket) => {
         // Host pindah ke MANUSIA pertama yang tersisa (jangan jadikan bot host).
         humansLeft[0].isHost = true;
       }
-      if (wasInElimGame) {
+      if (wasTagGame) {
+        // (c) Pemain aktif tersisa <= 1 -> akhiri ronde segera.
+        // (b) Yang keluar adalah pengejar -> pilih pengejar baru acak
+        // dari pemain aktif yang tersisa + broadcast tagChanged.
+        const active = activePlayers(room);
+        if (active.length <= 1) {
+          endTag(room);
+        } else if (wasTagChaser) {
+          const next = active[Math.floor(Math.random() * active.length)];
+          room.tagChaserId = next.id;
+          room.tagLastSwitchAt = Date.now();
+          room.tagImmuneUntil = Date.now() + TAG_IMMUNITY_MS;
+          io.to(room.code).emit('tagChanged', {
+            chaserId: next.id, chaserName: next.name,
+            prevChaserId: socket.id, prevChaserName: player.name,
+            times: { ...room.tagTimes }, serverTime: Date.now(),
+          });
+          broadcastRoom(room);
+        } else {
+          broadcastRoom(room);
+        }
+      } else if (wasInElimGame) {
         // Disconnect di tengah eliminasi = gugur. Kalau tinggal 1 pemain
         // aktif, dia langsung juara; kalau semua aktif sudah finish,
         // tutup round-nya.

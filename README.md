@@ -16,6 +16,7 @@ Balapan platformer 2D multiplayer ala Fall Guys — lari, lompat, hindari rintan
 * **Progress bar balapan** di atas layar: dot warna tiap pemain, penanda checkpoint & finish (v0.1.4)
 * **Sound effect** synth Web Audio (tanpa file audio): lompat, jatuh, kena palu, checkpoint, countdown/GO, finish, klik — tombol mute 🔊/🔇 di HUD, preferensi tersimpan di localStorage (v0.1.4)
 * **Mode Eliminasi 💀** (v0.2.0): multi-round, 2 pemain terlambat gugur tiap round sampai tersisa 1 juara — lihat bagian Mode Eliminasi di bawah
+* **Mode Kejar-kejaran / Tag 🏃** (v0.5.0): 1 pengejar acak, yang disentuh jadi pengejar baru, 90 detik — paling sedikit jadi pengejar = menang — lihat bagian Mode Tag di bawah
 * **Mode Penonton 👁️** (v0.2.0): yang sudah finish / gugur otomatis menonton pemain yang masih balapan, kameranya mengikuti yang paling depan — lihat bagian Mode Penonton di bawah
 * **Bot pengisi room 🤖** (v0.2.0): host bisa mengisi room dengan bot yang lari sendiri dari server — lihat bagian Bot di bawah
 * **Skin / karakter 🎨** (v0.2.0): pilih warna (8 pilihan) & bentuk (Kotak / Bulat / Segitiga) di lobby sebelum masuk room, tersimpan otomatis di localStorage — lihat bagian Skin di bawah
@@ -41,7 +42,7 @@ Lalu buka **http://localhost:3000** di browser.
 
 1. Isi nama kamu, pilih **warna** (8 pilihan) & **bentuk** karakter (⬛ Kotak / 🔵 Bulat / 🔺 Segitiga) di lobby — pilihan tersimpan otomatis di browser, jadi tidak perlu pilih ulang. Lalu **Buat Room** (dapat kode 4 huruf) atau **Gabung** pakai kode temanmu.
 2. Bagikan kode room ke teman-temanmu (maks 8 pemain).
-3. Host memilih map (**🗺️ Map 1 Klasik** / **🌪️ Map 2 Badai** / **🌌 Map 3 Angkasa** / **🏃 Map 4 Maraton**) dan mode (**🏁 Balapan Sekali** / **💀 Eliminasi**) di panel room, lalu menekan **Mulai Balapan**. Tunggu countdown 3-2-1-GO!
+3. Host memilih map (**🗺️ Map 1 Klasik** / **🌪️ Map 2 Badai** / **🌌 Map 3 Angkasa** / **🏃 Map 4 Maraton**) dan mode (**🏁 Balapan Sekali** / **💀 Eliminasi** / **🏃 Kejar-kejaran**) di panel room, lalu menekan **Mulai Balapan**. Tunggu countdown 3-2-1-GO!
 4. Kontrol:
    * **Gerak:** `A` / `D` atau `←` / `→` (di HP: tombol ◀ ▶)
    * **Lompat:** `Spasi` / `W` / `↑` (di HP: tombol ⤒)
@@ -104,6 +105,23 @@ Map terpanjang — sekali lari penuh terasa seperti maraton. Host memilih Map 4 
 * **Mode Eliminasi:** rotasi map jadi **Map 1 → Map 2 → Map 3 → Map 4 → ulang** (round 1 = map pilihan host). **Timeout round eliminasi di Map 4 = 110 detik** (map lain tetap 75 detik) — timeout dihitung dari map aktif saat race dimulai, dan dikirim ke client lewat field `roundTimeoutMs` di event `raceStarted` (bersama `width` dan `finishX` map aktif).
 * **Bot di Map 4:** bot memakai segmen tanah, checkpoint ganda, dan finish Map 4 yang sama (`MAP_GROUND`/`MAP_CHECKPOINTS`/`MAP_FINISH` di server); hazard campuran dihitung seperti map lama (palu 30% mati, laser nyala 50% mati, pintu 5% jatuh — roll 1x per zona per round; es/kipas tidak ada efek khusus ke bot, seperti Map 2/3). Anti-stuck tetap berlaku.
 * **Refactor per-map (v0.4.0):** lebar & finish tidak lagi hardcode 4800/4620 — tiap entri `MAPS` di `game.js` punya `width`, `finishX`, dan `checkpoints` (array); `checkpointX` lama dipertahankan sebagai alias (= `checkpoints[0]`). Di server, `MAP_CHECKPOINT` diganti `MAP_CHECKPOINTS` (array per map) + `MAP_FINISH`/`MAP_WIDTH`; `WORLD.finishX` hanya fallback default. Map 1-3 berperilaku persis seperti sebelumnya.
+
+## Mode Kejar-kejaran / Tag 🏃 (v0.5.0)
+
+Mode ke-3, bukan balapan: tidak ada garis finish dan tidak ada round eliminasi — 1 ronde tag saja per start. Host memilih **🏃 Kejar-kejaran** di lobby sebelum start (event `setMode` `{mode: 'tag'}` — hanya host, hanya saat lobby; server menolak mode selain `'race'`/`'elimination'`/`'tag'`, non-host, dan di luar lobby).
+
+Aturan (semua otoritatif di server, `server.js`):
+
+* **Minimal 3 pemain** untuk memulai Tag (manusia + bot dihitung). Kalau kurang, server menolak `startGame` dengan event `startError` `{message}`. Mode Balapan Sekali tetap minimal 1 pemain seperti biasa.
+* **Durasi ronde 90 detik** (timer dihitung server, `TAG_DURATION_MS = 90000`). Sisa waktu tampil di HUD semua pemain (hitung mundur dari `tagEndsAt` yang dikirim di `raceStarted`).
+* **1 pengejar acak di awal ronde** ("Si Kejar"), dipilih server dari pemain aktif saat race dimulai. Pengejar **lebih cepat +15%** dari pelari (`TAG_CHASER_SPEED_MULT = 1.15` — bot pengejar `botSpeed * 1.15`, manusia pengejar kecepatan lari × 1,15 di client).
+* **Sentuh = tag:** server mengecek posisi tiap **100 ms** (`TAG_TICK_MS`): kalau jarak pengejar ke seorang pelari **|dx| < 55 px dan |dy| < 100 px** (`TAG_DIST_X` / `TAG_DIST_Y`), pelari itu JADI pengejar baru, pengejar lama jadi pelari. **Masa kebal 2 detik** setelah pergantian (`TAG_IMMUNITY_MS`) — tidak bisa langsung tag-balik. Pergantian di-broadcast lewat event `tagChanged` `{chaserId, chaserName, prevChaserId, prevChaserName, times, serverTime}`.
+* **Cara menang:** server mencatat **total waktu tiap pemain jadi pengejar** (akumulasi detik, `tagTimes`). Saat timer 90 detik habis, pemenang = pemain dengan **total waktu jadi pengejar PALING SEDIKIT** (paling jago kabur). Hasil akhir diumumkan lewat event `tagFinished` `{results: [{id, name, colorHex, chaserMs, place, isBot, left}], winner, serverTime}` — results diurutkan dari waktu pengejar tersedikit. Pemain yang disconnect di tengah ronde: waktunya tetap dihitung sampai ia keluar, tapi **tidak bisa menang** (ditandai `left: true` di results).
+* **Jatuh / kena palu / laser:** sama seperti mode lain — mati + respawn di checkpoint terakhir yang dilewati, **status pengejar/pelari tetap** (tidak berubah karena mati). Power-up tetap jalan di mode Tag (speed boost membantu kabur/kejar, perisai menahan palu/laser). Tidak ada garis finish: client tidak mengirim `playerFinished` di mode Tag dan server mengabaikannya.
+* **Disconnect di tengah Tag:** kalau yang keluar adalah pengejar, server memilih pengejar baru acak dari pemain aktif yang tersisa (masa kebal 2 detik, broadcast `tagChanged`); kalau pemain aktif tersisa ≤ 1, ronde langsung berakhir (`tagFinished`).
+* **Visual & HUD (client):** pengejar langsung kelihatan — emoji **👹** di atas label nama + tint merah di sprite-nya + outline merah di dot progress bar-nya; pelari tampil normal. HUD menampilkan **⏱ sisa waktu ronde**, **👹 nama pengejar saat ini**, dan total waktu kamu jadi pengejar sejauh ini. Progress bar di mode Tag berfungsi sebagai "peta posisi" (dot tetap bergerak mengikuti x, tanpa `#place`). SFX baru (Web Audio, tanpa file): bunyi saat pergantian pengejar; toast "😱 Budi jadi pengejar!" / "🏃 Kamu jadi pengejar, kejar mereka!".
+* **Bot di mode Tag:** bot ikut main seperti manusia — bot pengejar **mengejar pelari aktif terdekat** (bergerak ke arah x-nya, lompat jurang seperti biasa), bot pelari **lari menjauh dari pengejar** (berbalik arah kalau mendekati ujung kiri map, x < 300, dan berbalik kalau mencapai ujung kanan/finish). Bot tetap kena hazard (palu 30% / laser nyala 50% mati, pintu 5% jatuh — roll 1x per zona per round) dan anti-stuck tetap berlaku. Bot bisa jadi pengejar maupun ditag.
+* **Test:** durasi Tag bisa di-override hanya untuk test lewat env var `TAG_TEST_DURATION_MS` (default 90000; test memakai 15000) — perilaku produksi tetap 90 detik.
 
 ## Mode Eliminasi 💀 (v0.2.0)
 

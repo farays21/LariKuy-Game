@@ -182,8 +182,30 @@
   let roomCode = '';
   let roomStatus = 'lobby';
   let currentMapId = 'map1'; // map room saat ini; default Map 1
-  let currentMode = 'race'; // 'race' = balapan sekali, 'elimination' = eliminasi
+  let currentMode = 'race'; // 'race' = balapan sekali, 'elimination' = eliminasi, 'tag' = kejar-kejaran
   let currentRound = 1;
+  // ---------- State Mode Tag (v0.5.0) ----------
+  // tagChaserId: id pemain yang sedang jadi pengejar (null = belum ada).
+  // tagEndsAt: epoch ms saat mode Tag berakhir (dari server, raceStarted).
+  // tagTimes: id -> total ms jadi pengejar (kumulatif dari server, tagChanged).
+  // tagChaserSince: Date.now() saat SAYA mulai jadi pengejar (null kalau bukan).
+  let tagChaserId = null;
+  let tagEndsAt = null;
+  let tagTimes = {};
+  let tagChaserSince = null;
+  function isTagMode() { return currentMode === 'tag'; }
+  function amChaser() { return tagChaserId != null && tagChaserId === myId; }
+  // Total waktu saya jadi pengejar: kumulatif server + stint yang sedang jalan.
+  function myChaserMs() {
+    return (tagTimes[myId] || 0) + (amChaser() && tagChaserSince ? Date.now() - tagChaserSince : 0);
+  }
+  function tagChaserName() {
+    if (!tagChaserId) return '—';
+    const p = lastPlayers.find((q) => q.id === tagChaserId);
+    if (p) return p.name;
+    const m = progressMap.get(tagChaserId);
+    return (m && m.name) || '—';
+  }
   let amEliminated = false; // true kalau saya gugur di mode eliminasi (jadi penonton)
   let spectateTargetId = null; // id pemain yang sedang ditonton (mode penonton, Fitur 5)
   let lastPlayers = []; // daftar pemain terakhir dari roomUpdate (dipakai mode penonton)
@@ -279,6 +301,12 @@
       // Power-up (v0.3.0): nada naik saat mengambil, bunyi pecah saat perisai habis.
       powerup() { [660, 880, 1320].forEach((f, i) => tone({ freq: f, dur: 0.12, delay: i * 0.07 })); },
       shieldBreak() { tone({ freq: 220, freqEnd: 70, dur: 0.25, type: 'sawtooth', vol: 0.2 }); },
+      // Mode Tag (v0.5.0): dua nada cepat turun-naik, terdengar "mengejutkan"
+      // saat ada yang jadi pengejar.
+      tag() {
+        tone({ freq: 900, freqEnd: 300, dur: 0.15, type: 'square', vol: 0.22 });
+        tone({ freq: 300, freqEnd: 900, dur: 0.18, type: 'square', vol: 0.2, delay: 0.12 });
+      },
     };
   })();
   // Buka kunci audio saat interaksi pertama (klik / sentuh / tombol keyboard).
@@ -306,6 +334,10 @@
       finished: data.finished != null ? data.finished : prev.finished,
       place: data.place != null ? data.place : prev.place,
       isBot: data.isBot != null ? data.isBot : prev.isBot,
+      // Mode Tag (v0.5.0): data.chaser dari server kalau ada; kalau tidak
+      // ada (undefined), hitung dari tagChaserId — jadi tidak crash dan
+      // dot ikut berubah saat pengejar berganti (lihat tagChanged).
+      chaser: data.chaser != null ? !!data.chaser : (id === tagChaserId),
     };
     progressMap.set(id, merged);
     let el = progressEls[id];
@@ -328,6 +360,7 @@
     el.style.background = merged.colorHex || '#999';
     el.classList.toggle('me', id === myId);
     el.classList.toggle('finished', !!merged.finished);
+    el.classList.toggle('chaser', !!merged.chaser);
     el.firstChild.textContent = (merged.name || '').slice(0, 8) +
       (merged.isBot ? ' 🤖' : '') +
       (merged.finished && merged.place ? ' #' + merged.place : '') +
@@ -364,9 +397,9 @@
   const playerListEl = $('playerList'), resultsEl = $('results'), resultsListEl = $('resultsList');
   const countdownEl = $('countdown'), toastEl = $('toast');
   const mapPickerEl = $('mapPicker'), btnMap1El = $('btnMap1'), btnMap2El = $('btnMap2'), btnMap3El = $('btnMap3'), btnMap4El = $('btnMap4');
-  const modePickerEl = $('modePicker'), btnModeRaceEl = $('btnModeRace'), btnModeElimEl = $('btnModeElim');
+  const modePickerEl = $('modePicker'), btnModeRaceEl = $('btnModeRace'), btnModeElimEl = $('btnModeElim'), btnModeTagEl = $('btnModeTag');
   const botPickerEl = $('botPicker'), chkFillBotsEl = $('chkFillBots');
-  const modeLineEl = $('modeLine'), hudModeEl = $('hudMode');
+  const modeLineEl = $('modeLine'), hudModeEl = $('hudMode'), hudTagEl = $('hudTag');
   const roundPanelEl = $('roundPanel'), roundPanelTitleEl = $('roundPanelTitle');
   const roundPanelSubEl = $('roundPanelSub'), roundPanelListEl = $('roundPanelList');
   const roundPanelNextEl = $('roundPanelNext'), resultsTitleEl = $('resultsTitle');
@@ -436,13 +469,16 @@
 
   // ---------- Pemilih mode (v0.2.0 Fitur 2): hanya host, hanya saat lobby ----------
   function modeLabel(mode) {
+    if (mode === 'tag') return '🏃 Kejar-kejaran';
     return mode === 'elimination' ? '💀 Eliminasi' : '🏁 Balapan Sekali';
   }
   function updateModePicker(mode) {
-    if (btnModeRaceEl) btnModeRaceEl.classList.toggle('selected', mode !== 'elimination');
+    if (btnModeRaceEl) btnModeRaceEl.classList.toggle('selected', mode === 'race');
     if (btnModeElimEl) btnModeElimEl.classList.toggle('selected', mode === 'elimination');
+    if (btnModeTagEl) btnModeTagEl.classList.toggle('selected', mode === 'tag');
     if (modeLineEl) modeLineEl.textContent = 'Mode: ' + modeLabel(mode) +
-      (mode === 'elimination' ? ' — 2 terlambat gugur tiap round, min. 3 pemain' : '');
+      (mode === 'elimination' ? ' — 2 terlambat gugur tiap round, min. 3 pemain' :
+        mode === 'tag' ? ' — 1 pengejar acak, paling sedikit jadi pengejar = menang (90 dtk), min. 3 pemain' : '');
   }
   // HUD mode/round: tampil saat balapan eliminasi; kalau saya gugur,
   // tampilkan label penonton (kamera mengikuti pemain lain ditangani
@@ -450,7 +486,10 @@
   function updateHudMode() {
     if (!hudModeEl) return;
     if (roomStatus === 'lobby') { hudModeEl.hidden = true; return; }
-    if (currentMode === 'elimination') {
+    if (currentMode === 'tag') {
+      hudModeEl.hidden = false;
+      hudModeEl.textContent = '🏃 Kejar-kejaran';
+    } else if (currentMode === 'elimination') {
       hudModeEl.hidden = false;
       hudModeEl.textContent = amEliminated
         ? '💀 Kamu gugur — jadi penonton'
@@ -459,13 +498,26 @@
       hudModeEl.hidden = false;
       hudModeEl.textContent = '🏁 Balapan Sekali';
     }
+    updateTagHud();
   }
   // Terapkan mode dari server: simpan + update UI.
   function applyMode(mode) {
-    if (mode !== 'race' && mode !== 'elimination') return;
+    if (mode !== 'race' && mode !== 'elimination' && mode !== 'tag') return;
     currentMode = mode;
     updateModePicker(mode);
     updateHudMode();
+  }
+
+  // ---------- HUD Mode Tag (v0.5.0) ----------
+  // Tampil hanya saat mode Tag & sedang balapan. Isi: nama pengejar +
+  // waktu SAYA jadi pengejar (kumulatif + stint berjalan, fmtTime).
+  function updateTagHud() {
+    if (!hudTagEl) return;
+    const show = isTagMode() && roomStatus === 'racing';
+    hudTagEl.hidden = !show;
+    if (!show) return;
+    hudTagEl.textContent = '👹 Pengejar: ' + tagChaserName() +
+      (amChaser() ? ' · Kamu jadi pengejar ' + fmtTime(myChaserMs()) : ' · Kamu: ' + fmtTime(myChaserMs()));
   }
 
   // ---------- Mode Penonton (v0.2.0 Fitur 5) ----------
@@ -764,6 +816,20 @@
     // Progress bar: posisi tiap pemain dari roomUpdate (otoritatif).
     d.players.forEach((p) => updateProgressDot(p.id, p));
     pruneProgressDots(new Set(d.players.map((p) => p.id)));
+    // Mode Tag (v0.5.0): sinkronisasi pengejar & waktu berakhir secara
+    // diam-diam (tanpa toast/SFX) — perubahan pengejar yang "resmi" datang
+    // lewat event tagChanged, ini hanya penyeimbang kalau ada yang terlewat.
+    if (d.tagChaserId !== undefined) {
+      const changed = d.tagChaserId !== tagChaserId;
+      tagChaserId = d.tagChaserId;
+      if (d.tagEndsAt !== undefined) tagEndsAt = d.tagEndsAt;
+      if (changed) {
+        tagChaserSince = (tagChaserId === myId) ? Date.now() : null;
+        progressMap.forEach((v, id) => updateProgressDot(id, { chaser: id === tagChaserId }));
+        if (scene) scene.refreshChaserVisuals();
+      }
+      updateTagHud();
+    }
     // Hapus pemain remote yang sudah keluar.
     if (scene) scene.syncRemotePlayers(d.players);
     // Mode penonton: target bisa gugur/disconnect di roomUpdate ini,
@@ -806,6 +872,23 @@
     // menonton lagi begitu round baru mulai.
     updateSpectator();
     showToast('Lari, Kuy! 🏃');
+    // Mode Tag (v0.5.0): simpan pengejar awal + waktu berakhir dari server.
+    // Mode lain: state Tag dibiarkan apa adanya (harusnya sudah null dari
+    // backToLobby / tagFinished) — jangan direset di sini.
+    if (d.mode === 'tag') {
+      tagChaserId = d.chaserId != null ? d.chaserId : null;
+      tagEndsAt = d.tagEndsAt != null ? d.tagEndsAt : null;
+      tagTimes = {};
+      tagChaserSince = (tagChaserId === myId) ? Date.now() : null;
+      updateTagHud();
+      if (scene) scene.refreshChaserVisuals();
+      if (tagChaserId === myId) {
+        showToast('🏃 Kamu jadi pengejar, kejar mereka!');
+      } else {
+        showToast('👹 ' + (d.chaserName || tagChaserName()) + ' jadi pengejar! Lari!');
+      }
+      SFX.tag();
+    }
   });
 
   socket.on('playersMoved', (d) => {
@@ -948,6 +1031,48 @@
     showToast('👑 ' + (d.champion ? d.champion.name : '?') + ' juara Eliminasi!', 4000);
   });
 
+  // ---------- Mode Tag (v0.5.0): ganti pengejar & akhir permainan ----------
+  socket.on('tagChanged', (d) => {
+    tagChaserId = d.chaserId != null ? d.chaserId : null;
+    if (d.times) tagTimes = d.times || {};
+    tagChaserSince = (tagChaserId === myId) ? Date.now() : null;
+    if (d.serverTime) serverTimeOffset = d.serverTime - Date.now();
+    updateTagHud();
+    if (scene) scene.refreshChaserVisuals();
+    // Dot progress bar lama ikut berubah (pengejar baru dapat outline merah).
+    progressMap.forEach((v, id) => updateProgressDot(id, { chaser: id === tagChaserId }));
+    if (tagChaserId === myId) {
+      showToast('🏃 Kamu jadi pengejar! Kejar mereka!');
+    } else {
+      showToast('😱 ' + (d.chaserName || tagChaserName()) + ' jadi pengejar!');
+    }
+    SFX.tag();
+  });
+
+  socket.on('tagFinished', (d) => {
+    roomStatus = 'finished';
+    setChatOpen(true); // kejar-kejaran selesai: chat dibuka lagi
+    if (scene) scene.endRace();
+    updateSpectator(); // mode penonton berakhir, panel hasil tampil
+    if (resultsTitleEl) resultsTitleEl.textContent = '🏆 Hasil Kejar-kejaran';
+    resultsEl.hidden = false;
+    if (roundPanelEl) roundPanelEl.hidden = true;
+    const results = (d.results || []).slice().sort((a, b) => (a.place || 0) - (b.place || 0));
+    resultsListEl.innerHTML = results.map((r) =>
+      '<li><b>#' + r.place + ' ' + escapeHtml(r.name) + (r.isBot ? ' 🤖' : '') + '</b> — ' + fmtTime(r.chaserMs || 0) +
+      (d.winner && r.id === d.winner.id ? ' 👑 Pemenang' : '') +
+      (r.id === myId ? ' 👈 kamu' : '') +
+      (r.left ? ' (keluar)' : '') + '</li>').join('') ||
+      '<li>Belum ada hasil.</li>';
+    if (d.winner && d.winner.id === myId) SFX.fanfare(); else SFX.otherFinish();
+    showToast('👑 ' + (d.winner ? d.winner.name : '?') + ' paling jago kabur!', 4000);
+    // Bersihkan state Tag supaya timer HUD berhenti & tint pengejar hilang.
+    tagChaserId = null; tagEndsAt = null; tagTimes = {}; tagChaserSince = null;
+    updateTagHud();
+    if (scene) scene.refreshChaserVisuals();
+    progressMap.forEach((v, id) => updateProgressDot(id, { chaser: false }));
+  });
+
   socket.on('backToLobby', () => {
     document.body.classList.remove('in-game');
     resetProgress();
@@ -955,6 +1080,9 @@
     currentMode = 'race';
     currentRound = 1;
     amEliminated = false;
+    // Mode Tag (v0.5.0): reset state pengejar saat kembali ke lobby.
+    tagChaserId = null; tagEndsAt = null; tagTimes = {}; tagChaserSince = null;
+    updateTagHud();
     if (chkFillBotsEl) chkFillBotsEl.checked = false; // bot dihapus server saat backToLobby
     updateModePicker('race');
     updateHudMode();
@@ -1097,6 +1225,10 @@
   if (btnModeElimEl) btnModeElimEl.addEventListener('click', () => {
     SFX.unlock(); SFX.click();
     if (isHost) socket.emit('setMode', { mode: 'elimination' });
+  });
+  if (btnModeTagEl) btnModeTagEl.addEventListener('click', () => {
+    SFX.unlock(); SFX.click();
+    if (isHost) socket.emit('setMode', { mode: 'tag' });
   });
   $('btnAgain').addEventListener('click', () => {
     SFX.unlock(); SFX.click();
@@ -1572,7 +1704,12 @@
       }
       const r = this.remoteSprites[id];
       r.targetX = d.x; r.targetY = d.y;
-      r.label.setText((d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
+      // Urutan prefix label: 👹 (pengejar) lalu 🤖 (bot) lalu ikon efek lalu nama.
+      r.label.setText((id === tagChaserId ? '👹 ' : '') + (d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
+      // Sprite pengejar di-tint merah supaya langsung kelihatan.
+      if (r.sprite.setTint) {
+        if (id === tagChaserId) r.sprite.setTint(0xff5555); else r.sprite.clearTint();
+      }
       // Mode penonton (Fitur 5): target yang spritenya baru dibuat sekarang
       // (belum ada playersMoved darinya saat dipilih) langsung diikuti
       // kameranya. Kalau sprite sudah ada, kamera sudah mengikuti dari
@@ -1592,7 +1729,31 @@
       const r = this.remoteSprites && this.remoteSprites[id];
       if (!r) return;
       const d = remoteTargets[id];
-      if (d) r.label.setText((d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
+      if (d) r.label.setText((id === tagChaserId ? '👹 ' : '') + (d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
+    }
+    // --- Mode Tag (v0.5.0): visual pengejar ---
+    // Label lokal diawali '👹 ' + sprite di-tint merah saat jadi pengejar;
+    // semua sprite remote ikut disegarkan (tint + prefix label). Dipanggil
+    // dari handler tagChanged / raceStarted / roomUpdate, dan dari update()
+    // kalau status pengejar lokal berubah di luar handler itu.
+    refreshChaserVisuals() {
+      if (!this.player) return;
+      const meChaser = amChaser();
+      if (this.nameLabel) this.nameLabel.setText((meChaser ? '👹 ' : '') + myName);
+      if (this.player.setTint) {
+        if (meChaser) this.player.setTint(0xff5555); else this.player.clearTint();
+      }
+      Object.keys(this.remoteSprites || {}).forEach((id) => {
+        const r = this.remoteSprites[id];
+        if (!r) return;
+        if (r.sprite && r.sprite.setTint) {
+          if (id === tagChaserId) r.sprite.setTint(0xff5555); else r.sprite.clearTint();
+        }
+        const d = remoteTargets[id];
+        if (r.label && d) {
+          r.label.setText((id === tagChaserId ? '👹 ' : '') + (d.isBot ? '🤖 ' : '') + this.remoteEffectIcon(id) + d.name);
+        }
+      });
     }
     // --- Power-up: render item di map (v0.3.0) ---
     // Dipanggil tiap server kirim 'powerups' (awal round + saat diambil +
@@ -1783,7 +1944,9 @@
       if (this.racing && !finished && !amEliminated) {
         const onGround = p.body.touching.down || p.body.blocked.down;
         // Power-up Speed Boost (v0.3.0): lari x1,5 selama 3 detik.
-        const spd = Date.now() < myEffects.speedUntil ? 420 : 280;
+        let spd = Date.now() < myEffects.speedUntil ? 420 : 280;
+        // Mode Tag (v0.5.0): pengejar lari 15% lebih cepat.
+        if (isTagMode() && amChaser()) spd = Math.round(spd * 1.15);
         // Lantai es: cek apakah pemain berdiri di atas segmen es map ini.
         const onIce = onGround && (def.ice || []).some(([a, b]) => p.x >= a && p.x <= b);
         if (onIce) {
@@ -1829,6 +1992,9 @@
 
       // Label nama mengikuti pemain
       this.nameLabel.setPosition(p.x, p.y - 34);
+      // Mode Tag (v0.5.0): kalau status pengejar lokal berubah, segarkan
+      // label + tint (pengaman kalau tagChanged datang sebelum scene siap).
+      if (this._wasChaser !== amChaser()) { this._wasChaser = amChaser(); this.refreshChaserVisuals(); }
 
       // --- Taunt: emoji melayang mengikuti sprite pemiliknya (v0.3.0) ---
       Object.entries(this.tauntTexts || {}).forEach(([id, txt]) => {
@@ -1850,7 +2016,7 @@
         });
       }
       // HUD efek power-up (sisa detik) diperbarui maks ~5 Hz.
-      if (time - this._lastPowHud > 200) { this._lastPowHud = time; updatePowerupHud(); }
+      if (time - this._lastPowHud > 200) { this._lastPowHud = time; updatePowerupHud(); updateTagHud(); }
 
       // --- Checkpoint GANDA (v0.4.0): respawn pindah ke checkpoint TERAKHIR
       // yang dilewati. Map 1-3 (1 checkpoint) berperilaku persis seperti dulu.
@@ -1881,8 +2047,10 @@
         showToast('😵 Jatuh! Kembali ke checkpoint');
       }
 
-      // --- Finish (server yang menentukan urutan; finishX map aktif) ---
-      if (this.racing && !finished && !finishSent && !amEliminated && p.x >= (def.finishX || FINISH_X)) {
+      // --- Finish DINONAKTIFKAN di mode Tag (v0.5.0): tidak ada garis
+      // finish, pemenang ditentukan dari waktu jadi pengejar (server yang
+      // menentukan urutan; finishX map aktif). ---
+      if (!isTagMode() && this.racing && !finished && !finishSent && !amEliminated && p.x >= (def.finishX || FINISH_X)) {
         finished = true; finishSent = true;
         p.setVelocity(0, 0);
         socket.emit('playerFinished', { x: p.x });
@@ -1890,7 +2058,12 @@
       }
 
       // --- Timer HUD ---
-      if (raceStartServerTime) {
+      // Mode Tag (v0.5.0): tampilkan SISA waktu (hitung mundur dari
+      // tagEndsAt server), bukan waktu berjalan.
+      if (isTagMode() && tagEndsAt) {
+        const remain = Math.max(0, Math.ceil((tagEndsAt - serverNow()) / 1000));
+        $('hudTimer').textContent = '⏱ ' + remain + ' dtk';
+      } else if (raceStartServerTime) {
         const el = serverNow() - raceStartServerTime;
         $('hudTimer').textContent = '⏱ ' + (this.racing || finished ? fmtTime(Math.max(0, el)) : '0.0 dtk');
       }

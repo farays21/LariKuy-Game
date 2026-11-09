@@ -91,6 +91,7 @@ body.in-game .topbar, body.in-game footer { display: none; }
 .progress-dot.me { width: 18px; height: 18px; border-width: 3px; box-shadow: 0 0 0 2px #fff; z-index: 3; }
 .progress-dot .pname { position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%); font-size: 10px; font-weight: 800; color: #222; background: rgba(255, 255, 255, .92); padding: 0 3px; border-radius: 4px; white-space: nowrap; }
 .progress-dot.finished { outline: 2px solid #2ed573; }
+.progress-dot.chaser { outline: 3px solid #ff2244; box-shadow: 0 0 0 2px #fff, 0 0 8px #ff2244; }
 /* Panel room saat lobby: ringkas, daftar pemain scroll di dalam kalau rame. */
 #roomInfo { flex-shrink: 0; padding: 10px 14px; max-height: 42%; overflow-y: auto; }
 #roomInfo p { margin: 4px 0; }
